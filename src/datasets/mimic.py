@@ -66,7 +66,7 @@ class Mimic(Dataset):
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
-        self.mimic_tensor = torch.load(mimic_tensor)
+        self.mimic_tensor = torch.load(mimic_tensor).float()
         self.transform = transform
 
     def __len__(self):

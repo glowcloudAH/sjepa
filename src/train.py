@@ -25,16 +25,16 @@ import yaml
 import numpy as np
 
 import torch
-import torch.multiprocessing as mp
+#import torch.multiprocessing as mp
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel
+#from torch.nn.parallel import DistributedDataParallel
 
 from src.masks.multiblock import MaskCollator as MBMaskCollator
 from src.masks.utils import apply_masks
-from src.utils.distributed import (
-    init_distributed,
-    AllReduce
-)
+#from src.utils.distributed import (
+#    init_distributed,
+#    AllReduce
+#)
 from src.utils.logging import (
     CSVLogger,
     gpu_timer,
@@ -126,23 +126,24 @@ def main(args, resume_preempt=False):
     tag = args['logging']['write_tag']
 
     dump = os.path.join(folder, 'params-ijepa.yaml')
+    os.makedirs(os.path.dirname(dump), exist_ok=True)
     with open(dump, 'w') as f:
         yaml.dump(args, f)
     # ----------------------------------------------------------------------- #
 
-    try:
-        mp.set_start_method('spawn')
-    except Exception:
-        pass
+    #try:
+    #    mp.set_start_method('spawn')
+    #except Exception:
+    #    pass
 
     # -- init torch distributed backend
-    world_size, rank = init_distributed()
-    logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
-    if rank > 0:
-        logger.setLevel(logging.ERROR)
+    #world_size, rank = init_distributed()
+    #logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
+    #if rank > 0:
+    #    logger.setLevel(logging.ERROR)
 
     # -- log/checkpointing paths
-    log_file = os.path.join(folder, f'{tag}_r{rank}.csv')
+    log_file = os.path.join(folder, f'{tag}.csv')
     save_path = os.path.join(folder, f'{tag}' + '-ep{epoch}.pth.tar')
     latest_path = os.path.join(folder, f'{tag}-latest.pth.tar')
     load_path = None
