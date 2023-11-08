@@ -27,7 +27,7 @@ class MaskCollator(object):
         if not isinstance(input_size, tuple):
             input_size = (input_size, ) * 2
         self.patch_size = patch_size
-        self.height, self.width = input_size[0] // patch_size, input_size[1] // patch_size
+        self.height, self.width = input_size[0] // patch_size[0], input_size[1] // patch_size[1]
         self.ratio = ratio
         self._itr_counter = Value('i', -1)  # collator is shared across worker processes
 
@@ -48,7 +48,6 @@ class MaskCollator(object):
         # 5. return enc mask and pred mask
         '''
         B = len(batch)
-
         collated_batch = torch.utils.data.default_collate(batch)
 
         seed = self.step()

@@ -151,13 +151,13 @@ def main(args, resume_preempt=False):
         load_path = os.path.join(folder, r_file) if r_file is not None else latest_path
 
     # -- make csv_logger
-    csv_logger = CSVLogger(log_file,
-                           ('%d', 'epoch'),
-                           ('%d', 'itr'),
-                           ('%.5f', 'loss'),
-                           ('%.5f', 'mask-A'),
-                           ('%.5f', 'mask-B'),
-                           ('%d', 'time (ms)'))
+    #csv_logger = CSVLogger(log_file,
+    #                       ('%d', 'epoch'),
+    #                       ('%d', 'itr'),
+    #                       ('%.5f', 'loss'),
+    #                       ('%.5f', 'mask-A'),
+    #                       ('%.5f', 'mask-B'),
+    #                       ('%d', 'time (ms)'))
 
     # -- init model
     encoder, predictor = init_model(
@@ -190,15 +190,15 @@ def main(args, resume_preempt=False):
         color_jitter=color_jitter)
 
     # -- init data-loaders/samplers
-    _, unsupervised_loader, unsupervised_sampler = make_imagenet1k(
+    _, unsupervised_loader = make_mimic(#), unsupervised_sampler = make_mimic(
             transform=transform,
             batch_size=batch_size,
             collator=mask_collator,
             pin_mem=pin_mem,
             training=True,
             num_workers=num_workers,
-            world_size=world_size,
-            rank=rank,
+            #world_size=world_size,
+            #rank=rank,
             root_path=root_path,
             image_folder=image_folder,
             copy_data=copy_data,
@@ -219,9 +219,9 @@ def main(args, resume_preempt=False):
         num_epochs=num_epochs,
         ipe_scale=ipe_scale,
         use_bfloat16=use_bfloat16)
-    encoder = DistributedDataParallel(encoder, static_graph=True)
-    predictor = DistributedDataParallel(predictor, static_graph=True)
-    target_encoder = DistributedDataParallel(target_encoder)
+    #encoder = DistributedDataParallel(encoder, static_graph=True)
+    #predictor = DistributedDataParallel(predictor, static_graph=True)
+    #target_encoder = DistributedDataParallel(target_encoder)
     for p in target_encoder.parameters():
         p.requires_grad = False
 

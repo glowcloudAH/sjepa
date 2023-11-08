@@ -173,21 +173,38 @@ class Block(nn.Module):
         return x
 
 
+#class PatchEmbed(nn.Module):
+#    """ Signal to Patch Embedding
+#    """
+#    def __init__(self, sig_size=5000, patch_size=100, in_chans=12, embed_dim=768):
+#        super().__init__()
+#        num_patches = (sig_size // patch_size) * in_chans
+#        self.sig_size = sig_size
+#        self.patch_size = patch_size
+#        self.num_patches = num_patches
+#
+#        self.proj = nn.Conv2d(1, embed_dim, kernel_size=(1, patch_size), stride=(1, patch_size))
+#
+#    def forward(self, x):
+#        B, C, L = x.shape
+#        x = x.view(B, 1, C, L) # reshape the signal to 2D
+#        x = self.proj(x).flatten(2).transpose(1, 2)
+#        return x
+
 class PatchEmbed(nn.Module):
-    """ Signal to Patch Embedding
+    """ Image to Patch Embedding
     """
-    def __init__(self, sig_size=5000, patch_size=100, in_chans=12, embed_dim=768):
+    def __init__(self, sig_size=(12,5000), patch_size=(1,100), in_chans=1, embed_dim=768):
         super().__init__()
-        num_patches = (sig_size // patch_size) * in_chans
-        self.sig_size = sig_size
+        num_patches = (sig_size[0]//patch_size[0]) * (sig_size[1] // patch_size[1])
+        self.img_size = sig_size
         self.patch_size = patch_size
         self.num_patches = num_patches
 
-        self.proj = nn.Conv2d(1, embed_dim, kernel_size=(1, patch_size), stride=(1, patch_size))
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
-        B, C, L = x.shape
-        x = x.view(B, 1, C, L) # reshape the signal to 2D
+        B, C, H, W = x.shape
         x = self.proj(x).flatten(2).transpose(1, 2)
         return x
 
@@ -318,7 +335,11 @@ class VisionTransformerPredictor(nn.Module):
         x = self.predictor_embed(x)
 
         # -- add positional embedding to x tokens
+        print("predictor_pos_embed:", self.predictor_pos_embed.shape)
         x_pos_embed = self.predictor_pos_embed.repeat(B, 1, 1)
+        print("x_pos_embed", x_pos_embed.shape)
+        temp = apply_masks(x_pos_embed, masks_x)
+        print("temp:", temp.shape)
         x += apply_masks(x_pos_embed, masks_x)
 
         _, N_ctxt, D = x.shape
@@ -350,9 +371,9 @@ class VisionTransformer(nn.Module):
     """ Vision Transformer """
     def __init__(
         self,
-        img_size=[224],
-        patch_size=16,
-        in_chans=3,
+        sig_size=[12,5000],
+        patch_size=[1,100],
+        in_chans=1,
         embed_dim=768,
         predictor_embed_dim=384,
         depth=12,
@@ -373,7 +394,7 @@ class VisionTransformer(nn.Module):
         self.num_heads = num_heads
         # --
         self.patch_embed = PatchEmbed(
-            sig_size=img_size[0],
+            sig_size=sig_size,
             patch_size=patch_size,
             in_chans=in_chans,
             embed_dim=embed_dim)

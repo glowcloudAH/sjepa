@@ -73,19 +73,17 @@ def init_model(
     pred_depth=6,
     pred_emb_dim=384
 ):
-    #encoder = vit.__dict__[model_name](
-    #    img_size=[crop_size],
-    #    patch_size=patch_size)
-    encoder = nn.TransformerEncoderLayer(
-        d_model=crop_size,
-        n_head=12)
-    #predictor = vit.__dict__['vit_predictor'](
-    #    num_patches=encoder.patch_embed.num_patches,
-    #    embed_dim=encoder.embed_dim,
-    #    predictor_embed_dim=pred_emb_dim,
-    #    depth=pred_depth,
-    #    num_heads=encoder.num_heads)
-    predictor = 
+    encoder = vit.__dict__[model_name](
+        img_size=[crop_size],
+        patch_size=patch_size)
+  
+    predictor = vit.__dict__['vit_predictor'](
+        num_patches=encoder.patch_embed.num_patches,
+        embed_dim=encoder.embed_dim,
+        predictor_embed_dim=pred_emb_dim,
+        depth=pred_depth,
+        num_heads=encoder.num_heads)
+     
 
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):

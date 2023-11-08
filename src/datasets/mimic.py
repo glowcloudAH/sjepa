@@ -81,5 +81,8 @@ class Mimic(Dataset):
         if self.transform:
             sample = self.transform(sample)
 
+        sample = torch.unsqueeze(sample,0)
+
+
         return sample
 
