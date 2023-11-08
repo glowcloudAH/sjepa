@@ -19,18 +19,19 @@ from src.utils.tensors import (
 from src.masks.utils import apply_masks
 
 
-def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
+def get_2d_sincos_pos_embed(embed_dim, grid_size=[12,50], cls_token=False):
     """
     grid_size: int of the grid height and width
     return:
     pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
     """
-    grid_h = np.arange(grid_size, dtype=float)
-    grid_w = np.arange(grid_size, dtype=float)
+    grid_h = np.arange(grid_size[0], dtype=float)
+    grid_w = np.arange(grid_size[1], dtype=float)
     grid = np.meshgrid(grid_w, grid_h)  # here w goes first
     grid = np.stack(grid, axis=0)
+    
 
-    grid = grid.reshape([2, 1, grid_size, grid_size])
+    grid = grid.reshape([2, 1, grid_size[0], grid_size[1]])
     pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
     if cls_token:
         pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
@@ -45,6 +46,7 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
 
     emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
+    #print(emb.shape)
     return emb
 
 
@@ -172,6 +174,24 @@ class Block(nn.Module):
 
 
 class PatchEmbed(nn.Module):
+    """ Signal to Patch Embedding
+    """
+    def __init__(self, sig_size=5000, patch_size=100, in_chans=12, embed_dim=768):
+        super().__init__()
+        num_patches = (sig_size // patch_size) * in_chans
+        self.sig_size = sig_size
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+
+        self.proj = nn.Conv2d(1, embed_dim, kernel_size=(1, patch_size), stride=(1, patch_size))
+
+    def forward(self, x):
+        B, C, L = x.shape
+        x = x.view(B, 1, C, L) # reshape the signal to 2D
+        x = self.proj(x).flatten(2).transpose(1, 2)
+        return x
+
+class PatchEmbed_old(nn.Module):
     """ Image to Patch Embedding
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
@@ -244,7 +264,7 @@ class VisionTransformerPredictor(nn.Module):
         self.predictor_pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim),
                                                 requires_grad=False)
         predictor_pos_embed = get_2d_sincos_pos_embed(self.predictor_pos_embed.shape[-1],
-                                                      int(num_patches**.5),
+                                                      [12,num_patches//12],
                                                       cls_token=False)
         self.predictor_pos_embed.data.copy_(torch.from_numpy(predictor_pos_embed).float().unsqueeze(0))
         # --
@@ -353,16 +373,19 @@ class VisionTransformer(nn.Module):
         self.num_heads = num_heads
         # --
         self.patch_embed = PatchEmbed(
-            img_size=img_size[0],
+            sig_size=img_size[0],
             patch_size=patch_size,
             in_chans=in_chans,
             embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
         # --
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim), requires_grad=False)
+        print(num_patches)
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1],
-                                            int(self.patch_embed.num_patches**.5),
+                                            [12,num_patches//12],
                                             cls_token=False)
+        print(self.pos_embed.shape)
+        print(torch.from_numpy(pos_embed).float().unsqueeze(0).shape)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
         # --
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
