@@ -31,11 +31,16 @@ import torch.nn.functional as F
 
 from src.masks.multiblock import MaskCollator as MBMaskCollator
 from src.masks.utils import apply_masks
-#from src.utils.distributed import (
-#    init_distributed,
-#    AllReduce
-#)
+from src.utils.distributed import (
+    init_distributed,
+    AllReduce
+)
 
+from src.utils.logging import (
+    CSVLogger,
+    gpu_timer,
+    grad_logger,
+    AverageMeter)
 
 from src.utils.tensors import repeat_interleave_batch
 from src.datasets.imagenet1k import make_imagenet1k
@@ -151,13 +156,13 @@ def main(args, resume_preempt=False):
         load_path = os.path.join(folder, r_file) if r_file is not None else latest_path
 
     # -- make csv_logger
-    #csv_logger = CSVLogger(log_file,
-    #                       ('%d', 'epoch'),
-    #                       ('%d', 'itr'),
-    #                       ('%.5f', 'loss'),
-    #                       ('%.5f', 'mask-A'),
-    #                       ('%.5f', 'mask-B'),
-    #                       ('%d', 'time (ms)'))
+    csv_logger = CSVLogger(log_file,
+                           ('%d', 'epoch'),
+                           ('%d', 'itr'),
+                           ('%.5f', 'loss'),
+                           ('%.5f', 'mask-A'),
+                           ('%.5f', 'mask-B'),
+                           ('%d', 'time (ms)'))
 
     # -- init model
     encoder, predictor = init_model(
@@ -191,7 +196,7 @@ def main(args, resume_preempt=False):
 
     # -- init data-loaders/samplers
     _, unsupervised_loader = make_mimic(#), unsupervised_sampler = make_mimic(
-            transform=transform,
+            #transform=transform,
             batch_size=batch_size,
             collator=mask_collator,
             pin_mem=pin_mem,
@@ -254,22 +259,22 @@ def main(args, resume_preempt=False):
             'opt': optimizer.state_dict(),
             'scaler': None if scaler is None else scaler.state_dict(),
             'epoch': epoch,
-            'loss': loss_meter.avg,
+            #'loss': loss_meter.avg,
             'batch_size': batch_size,
-            'world_size': world_size,
+            #'world_size': world_size,
             'lr': lr
         }
-        if rank == 0:
-            torch.save(save_dict, latest_path)
-            if (epoch + 1) % checkpoint_freq == 0:
-                torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
+        #if rank == 0:
+        #    torch.save(save_dict, latest_path)
+        #    if (epoch + 1) % checkpoint_freq == 0:
+        #        torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
 
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
         logger.info('Epoch %d' % (epoch + 1))
 
         # -- update distributed-data-loader epoch
-        unsupervised_sampler.set_epoch(epoch)
+        #unsupervised_sampler.set_epoch(epoch)
 
         loss_meter = AverageMeter()
         maskA_meter = AverageMeter()
@@ -280,7 +285,7 @@ def main(args, resume_preempt=False):
 
             def load_imgs():
                 # -- unsupervised imgs
-                imgs = udata[0].to(device, non_blocking=True)
+                imgs = udata.to(device, non_blocking=True)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
                 return (imgs, masks_1, masks_2)

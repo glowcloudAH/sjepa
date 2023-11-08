@@ -18,8 +18,8 @@ logger = getLogger()
 
 
 def make_mimic(
-    transform,
-    batch_size,
+    transform=None,
+    batch_size=16,
     collator=None,
     pin_mem=True,
     num_workers=8,

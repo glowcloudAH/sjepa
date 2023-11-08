@@ -335,11 +335,7 @@ class VisionTransformerPredictor(nn.Module):
         x = self.predictor_embed(x)
 
         # -- add positional embedding to x tokens
-        print("predictor_pos_embed:", self.predictor_pos_embed.shape)
         x_pos_embed = self.predictor_pos_embed.repeat(B, 1, 1)
-        print("x_pos_embed", x_pos_embed.shape)
-        temp = apply_masks(x_pos_embed, masks_x)
-        print("temp:", temp.shape)
         x += apply_masks(x_pos_embed, masks_x)
 
         _, N_ctxt, D = x.shape
