@@ -26,13 +26,14 @@ def make_mimic(
     world_size=1,
     rank=0,
     root_path=None,
-    image_folder=None,
+    data_path=None,
     training=True,
     copy_data=False,
     drop_last=True,
     subset_file=None
 ):
     dataset = Mimic(
+        mimic_tensor=data_path,
         transform=transform)
     
     #if subset_file is not None:
@@ -59,7 +60,7 @@ def make_mimic(
 class Mimic(Dataset):
     """Mimic dataset."""
 
-    def __init__(self, mimic_tensor="mimic_data_1000.pt", transform=None):
+    def __init__(self, mimic_tensor=None, transform=None):
         """
         Arguments:
             mimic_tensor (string): Path to the mimic pytorch file
@@ -82,6 +83,8 @@ class Mimic(Dataset):
             sample = self.transform(sample)
 
         sample = torch.unsqueeze(sample,0)
+
+        sample = torch.nan_to_num(sample)
 
 
         return sample

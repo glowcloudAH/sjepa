@@ -19,6 +19,8 @@ except Exception:
 
 import copy
 import logging
+import wandb
+
 import sys
 import yaml
 
@@ -99,7 +101,7 @@ def main(args, resume_preempt=False):
     pin_mem = args['data']['pin_mem']
     num_workers = args['data']['num_workers']
     root_path = args['data']['root_path']
-    image_folder = args['data']['image_folder']
+    data_path = args['data']['data_path']
     crop_size = args['data']['crop_size']
     crop_scale = args['data']['crop_scale']
     # --
@@ -205,7 +207,7 @@ def main(args, resume_preempt=False):
             #world_size=world_size,
             #rank=rank,
             root_path=root_path,
-            image_folder=image_folder,
+            data_path=data_path,
             copy_data=copy_data,
             drop_last=True)
     ipe = len(unsupervised_loader)
@@ -345,6 +347,8 @@ def main(args, resume_preempt=False):
             (loss, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
             loss_meter.update(loss)
             time_meter.update(etime)
+
+            wandb.log({'loss': loss})
 
             # -- Logging
             def log_stats():

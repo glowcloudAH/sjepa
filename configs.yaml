@@ -7,7 +7,7 @@ data:
   crop_size: 
   - 12
   - 5000
-  image_folder: imagenet_full_size/061417/
+  data_path: mimic_data_0-10000.pt
   num_workers: 10
   pin_mem: true
   root_path: $./
@@ -46,7 +46,7 @@ optimization:
   ema:
   - 0.996
   - 1.0
-  epochs: 300
+  epochs: 3
   final_lr: 1.0e-06
   final_weight_decay: 0.4
   ipe_scale: 1.0

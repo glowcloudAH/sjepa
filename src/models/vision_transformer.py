@@ -46,7 +46,6 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
 
     emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
-    #print(emb.shape)
     return emb
 
 
@@ -262,7 +261,7 @@ class VisionTransformerPredictor(nn.Module):
         embed_dim=768,
         predictor_embed_dim=384,
         depth=6,
-        num_heads=12,
+        num_heads=6,#12,
         mlp_ratio=4.0,
         qkv_bias=True,
         qk_scale=None,
@@ -397,12 +396,9 @@ class VisionTransformer(nn.Module):
         num_patches = self.patch_embed.num_patches
         # --
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim), requires_grad=False)
-        print(num_patches)
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1],
                                             [12,num_patches//12],
                                             cls_token=False)
-        print(self.pos_embed.shape)
-        print(torch.from_numpy(pos_embed).float().unsqueeze(0).shape)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
         # --
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
