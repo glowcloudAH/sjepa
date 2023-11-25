@@ -132,7 +132,7 @@ class MaskCollator(object):
         e_size = self._sample_block_size(
             generator=g,
             scale=self.enc_mask_scale,
-            aspect_ratio_scale=(1., 1.))
+            aspect_ratio_scale=(0.24,0.24))#(1., 1.))
 
         collated_masks_pred, collated_masks_enc = [], []
         min_keep_pred = self.height * self.width
@@ -156,7 +156,7 @@ class MaskCollator(object):
 
             masks_e = []
             for _ in range(self.nenc):
-                mask, _ = self._sample_block_mask(e_size, acceptable_regions=acceptable_regions)
+                mask, mask_C = self._sample_block_mask(e_size, acceptable_regions=acceptable_regions)
                 masks_e.append(mask)
                 min_keep_enc = min(min_keep_enc, len(mask))
             collated_masks_enc.append(masks_e)
@@ -166,5 +166,11 @@ class MaskCollator(object):
         # --
         collated_masks_enc = [[cm[:min_keep_enc] for cm in cm_list] for cm_list in collated_masks_enc]
         collated_masks_enc = torch.utils.data.default_collate(collated_masks_enc)
+        
+        #from src.utils.plot_ecg import plot_ecg
+
+        #plot_ecg(collated_batch[0][0][0], collated_masks_pred[0][0])
+        #for mask in collated_masks_enc[0]:
+        #    plot_ecg(collated_batch[0][0][0], mask)
 
         return collated_batch, collated_masks_enc, collated_masks_pred

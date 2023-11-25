@@ -451,6 +451,7 @@ class VisionTransformer(nn.Module):
         if masks is not None:
             x = apply_masks(x, masks)
 
+
         # -- fwd prop
         for i, blk in enumerate(self.blocks):
             x = blk(x)
