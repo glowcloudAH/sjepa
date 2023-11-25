@@ -17,4 +17,5 @@ def apply_masks(x, masks):
     for m in masks:
         mask_keep = m.unsqueeze(-1).repeat(1, 1, x.size(-1))
         all_x += [torch.gather(x, dim=1, index=mask_keep)]
+
     return torch.cat(all_x, dim=0)

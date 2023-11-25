@@ -19,15 +19,17 @@ except Exception:
 
 import copy
 import logging
+import wandb
+
 import sys
 import yaml
 
 import numpy as np
 
 import torch
-import torch.multiprocessing as mp
+#import torch.multiprocessing as mp
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel
+#from torch.nn.parallel import DistributedDataParallel
 
 from src.masks.multiblock import MaskCollator as MBMaskCollator
 from src.masks.utils import apply_masks
@@ -35,18 +37,23 @@ from src.utils.distributed import (
     init_distributed,
     AllReduce
 )
+
 from src.utils.logging import (
     CSVLogger,
     gpu_timer,
     grad_logger,
     AverageMeter)
+
 from src.utils.tensors import repeat_interleave_batch
 from src.datasets.imagenet1k import make_imagenet1k
+from src.datasets.mimic import make_mimic
 
 from src.helper import (
     load_checkpoint,
     init_model,
-    init_opt)
+    init_opt
+    )
+
 from src.transforms import make_transforms
 
 # --
@@ -94,7 +101,7 @@ def main(args, resume_preempt=False):
     pin_mem = args['data']['pin_mem']
     num_workers = args['data']['num_workers']
     root_path = args['data']['root_path']
-    image_folder = args['data']['image_folder']
+    data_path = args['data']['data_path']
     crop_size = args['data']['crop_size']
     crop_scale = args['data']['crop_scale']
     # --
@@ -126,23 +133,24 @@ def main(args, resume_preempt=False):
     tag = args['logging']['write_tag']
 
     dump = os.path.join(folder, 'params-ijepa.yaml')
+    os.makedirs(os.path.dirname(dump), exist_ok=True)
     with open(dump, 'w') as f:
         yaml.dump(args, f)
     # ----------------------------------------------------------------------- #
 
-    try:
-        mp.set_start_method('spawn')
-    except Exception:
-        pass
+    #try:
+    #    mp.set_start_method('spawn')
+    #except Exception:
+    #    pass
 
     # -- init torch distributed backend
-    world_size, rank = init_distributed()
-    logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
-    if rank > 0:
-        logger.setLevel(logging.ERROR)
+    #world_size, rank = init_distributed()
+    #logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
+    #if rank > 0:
+    #    logger.setLevel(logging.ERROR)
 
     # -- log/checkpointing paths
-    log_file = os.path.join(folder, f'{tag}_r{rank}.csv')
+    log_file = os.path.join(folder, f'{tag}.csv')
     save_path = os.path.join(folder, f'{tag}' + '-ep{epoch}.pth.tar')
     latest_path = os.path.join(folder, f'{tag}-latest.pth.tar')
     load_path = None
@@ -189,17 +197,17 @@ def main(args, resume_preempt=False):
         color_jitter=color_jitter)
 
     # -- init data-loaders/samplers
-    _, unsupervised_loader, unsupervised_sampler = make_imagenet1k(
-            transform=transform,
+    _, unsupervised_loader = make_mimic(#), unsupervised_sampler = make_mimic(
+            #transform=transform,
             batch_size=batch_size,
             collator=mask_collator,
             pin_mem=pin_mem,
             training=True,
             num_workers=num_workers,
-            world_size=world_size,
-            rank=rank,
+            #world_size=world_size,
+            #rank=rank,
             root_path=root_path,
-            image_folder=image_folder,
+            data_path=data_path,
             copy_data=copy_data,
             drop_last=True)
     ipe = len(unsupervised_loader)
@@ -218,9 +226,9 @@ def main(args, resume_preempt=False):
         num_epochs=num_epochs,
         ipe_scale=ipe_scale,
         use_bfloat16=use_bfloat16)
-    encoder = DistributedDataParallel(encoder, static_graph=True)
-    predictor = DistributedDataParallel(predictor, static_graph=True)
-    target_encoder = DistributedDataParallel(target_encoder)
+    #encoder = DistributedDataParallel(encoder, static_graph=True)
+    #predictor = DistributedDataParallel(predictor, static_graph=True)
+    #target_encoder = DistributedDataParallel(target_encoder)
     for p in target_encoder.parameters():
         p.requires_grad = False
 
@@ -253,22 +261,22 @@ def main(args, resume_preempt=False):
             'opt': optimizer.state_dict(),
             'scaler': None if scaler is None else scaler.state_dict(),
             'epoch': epoch,
-            'loss': loss_meter.avg,
+            #'loss': loss_meter.avg,
             'batch_size': batch_size,
-            'world_size': world_size,
+            #'world_size': world_size,
             'lr': lr
         }
-        if rank == 0:
-            torch.save(save_dict, latest_path)
-            if (epoch + 1) % checkpoint_freq == 0:
-                torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
+        #if rank == 0:
+        #    torch.save(save_dict, latest_path)
+        #    if (epoch + 1) % checkpoint_freq == 0:
+        #        torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
 
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
         logger.info('Epoch %d' % (epoch + 1))
 
         # -- update distributed-data-loader epoch
-        unsupervised_sampler.set_epoch(epoch)
+        #unsupervised_sampler.set_epoch(epoch)
 
         loss_meter = AverageMeter()
         maskA_meter = AverageMeter()
@@ -279,7 +287,7 @@ def main(args, resume_preempt=False):
 
             def load_imgs():
                 # -- unsupervised imgs
-                imgs = udata[0].to(device, non_blocking=True)
+                imgs = udata.to(device, non_blocking=True)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
                 return (imgs, masks_1, masks_2)
@@ -339,6 +347,8 @@ def main(args, resume_preempt=False):
             (loss, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
             loss_meter.update(loss)
             time_meter.update(etime)
+
+            wandb.log({'loss': loss})
 
             # -- Logging
             def log_stats():
