@@ -90,10 +90,12 @@ def main(args, resume_preempt=False):
         torch.cuda.set_device(device)
 
     # -- DATA
-    use_gaussian_blur = args['data']['use_gaussian_blur']
-    use_horizontal_flip = args['data']['use_horizontal_flip']
-    use_color_distortion = args['data']['use_color_distortion']
-    color_jitter = args['data']['color_jitter_strength']
+    rescale_sigma = args['data']['rescale_sigma']
+    permutation = args['data']['permutation']
+    jitter = args['data']['jitter']
+    shift = args['data']['shift']
+    time_flip = args['data']['time_flip']
+    sign_flip = args['data']['sign_flip']
     # --
     batch_size = args['data']['batch_size']
     pin_mem = args['data']['pin_mem']
@@ -186,17 +188,17 @@ def main(args, resume_preempt=False):
         allow_overlap=allow_overlap,
         min_keep=min_keep)
 
-    #transform = make_transforms(
-    #    crop_size=crop_size,
-    #    crop_scale=crop_scale,
-    #    gaussian_blur=use_gaussian_blur,
-    #    horizontal_flip=use_horizontal_flip,
-    #    color_distortion=use_color_distortion,
-    #    color_jitter=color_jitter)
+    transform = make_transforms(
+        rescale_sigma=rescale_sigma,
+        permutation=permutation,
+        jitter=jitter,
+        shift=shift,
+        time_flip=time_flip,
+        sign_flip=sign_flip)
 
     # -- init data-loaders/samplers
     _, unsupervised_loader = make_mimic(#, unsupervised_sampler = make_mimic(
-            transform=None,
+            transform=transform,
             batch_size=batch_size,
             collator=mask_collator,
             pin_mem=pin_mem,
@@ -408,10 +410,12 @@ def main(args, resume_preempt=False):
         # -- Save Checkpoint after every epoch
         logger.info('avg. loss %.3f' % loss_meter.avg)
         save_checkpoint(epoch+1)
+        
         encoder.eval()
         target_encoder.eval()
         predictor.eval()
         for itr, (udata, masks_enc, masks_pred) in enumerate(val_loader):
+            
 
             def load_imgs():
                 # -- unsupervised imgs
@@ -452,11 +456,6 @@ def main(args, resume_preempt=False):
                     z = forward_context()
                     loss = loss_fn(z, h)
 
-                # Step 3. momentum update of target encoder
-                with torch.no_grad():
-                    m = next(momentum_scheduler)
-                    for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
-                        param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
 
                 return (float(loss), grad_stats)
             (loss, grad_stats), etime = gpu_timer(val_step)
@@ -466,10 +465,14 @@ def main(args, resume_preempt=False):
 
         wandb.log({"val_loss":val_loss_meter.avg, "val_masksA": val_maskA_meter.avg, 
                    "val_maskB": val_maskB_meter.avg})
+        logger.info('avg. val loss %.3f' % val_loss_meter.avg)
         
         encoder.train()
         target_encoder.train()
         predictor.train()
+        optimizer.zero_grad()
+        
+
 
 if __name__ == "__main__":
     main()
