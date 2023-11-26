@@ -103,6 +103,7 @@ def main(args, resume_preempt=False):
     root_path = args['data']['root_path']
     image_folder = args['data']['data_path']
     val_folder = args['data']['val_path']
+    validation = args['data']['validation']
     crop_size = args['data']['crop_size']
     crop_scale = args['data']['crop_scale']
     # --
@@ -198,7 +199,7 @@ def main(args, resume_preempt=False):
 
     # -- init data-loaders/samplers
     _, unsupervised_loader = make_mimic(#, unsupervised_sampler = make_mimic(
-            transform=transform,
+            transform=None,
             batch_size=batch_size,
             collator=mask_collator,
             pin_mem=pin_mem,
@@ -212,20 +213,21 @@ def main(args, resume_preempt=False):
             drop_last=True)
     ipe = len(unsupervised_loader)
 
-    _, val_loader = make_mimic(
-            transform=None,
-            batch_size=batch_size,
-            collator=mask_collator,
-            pin_mem=pin_mem,
-            training=True,
-            num_workers=num_workers,
-            world_size=world_size,
-            rank=rank,
-            root_path=root_path,
-            image_folder=val_folder,
-            copy_data=copy_data,
-            drop_last=True
-    )
+    if validation:
+        _, val_loader = make_mimic(
+                transform=None,
+                batch_size=batch_size,
+                collator=mask_collator,
+                pin_mem=pin_mem,
+                training=True,
+                num_workers=num_workers,
+                world_size=world_size,
+                rank=rank,
+                root_path=root_path,
+                image_folder=val_folder,
+                copy_data=copy_data,
+                drop_last=True
+        )
 
     # -- init optimizer and scheduler
     optimizer, scaler, scheduler, wd_scheduler = init_opt(
@@ -299,6 +301,9 @@ def main(args, resume_preempt=False):
         maskB_meter = AverageMeter()
         time_meter = AverageMeter()
 
+        ctx_enc_meter = AverageMeter()
+        target_enc_meter = AverageMeter()
+
         val_loss_meter = AverageMeter()
         val_predict_meter = AverageMeter()
         val_maskB_meter = AverageMeter()
@@ -331,10 +336,12 @@ def main(args, resume_preempt=False):
                         # -- create targets (masked regions of h)
                         h = apply_masks(h, masks_pred)
                         h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                        target_enc_meter.update(h.mean())
                         return h
 
                 def forward_context():
                     z = encoder(imgs, masks_enc)
+                    ctx_enc_meter.update(z.mean())
                     z = predictor(z, masks_enc, masks_pred)
                     return z
 
@@ -397,8 +404,21 @@ def main(args, resume_preempt=False):
                                        grad_stats.min,
                                        grad_stats.max))
                     
-                    wandb.log({"loss":loss_meter.avg, "masksA": maskA_meter.val, "maskB": maskB_meter.val,
-                               "wd":_new_wd, "lr": _new_lr})
+                    wandb.log({"loss":loss_meter.avg, 
+                                "masksA": maskA_meter.val, 
+                                "maskB": maskB_meter.val,
+                                "wd":_new_wd, 
+                                "lr": _new_lr,
+                                "context encoding avg": ctx_enc_meter.avg,
+                                "target encoding avg": target_enc_meter.avg,
+                                "context encoding min": ctx_enc_meter.min,
+                                "target encoding min": target_enc_meter.min,
+                                "context encoding max": ctx_enc_meter.max,
+                                "target encoding max": target_enc_meter.max,
+                                "grad_stats_first": grad_stats.first_layer,
+                                "grad_stats_last": grad_stats.last_layer,
+                                "grad_stats min": grad_stats.min,
+                                "grad_stats max": grad_stats.max})
 
 
             log_stats()
@@ -411,66 +431,67 @@ def main(args, resume_preempt=False):
         logger.info('avg. loss %.3f' % loss_meter.avg)
         save_checkpoint(epoch+1)
         
-        encoder.eval()
-        target_encoder.eval()
-        predictor.eval()
-        for itr, (udata, masks_enc, masks_pred) in enumerate(val_loader):
+        if validation:
+            encoder.eval()
+            target_encoder.eval()
+            predictor.eval()
+            for itr, (udata, masks_enc, masks_pred) in enumerate(val_loader):
+                
+
+                def load_imgs():
+                    # -- unsupervised imgs
+                    imgs = udata[0].to(device, non_blocking=True)
+                    masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
+                    masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
+                    return (imgs, masks_1, masks_2)
+                imgs, masks_enc, masks_pred = load_imgs()
+                val_maskA_meter.update(len(masks_enc[0][0]))
+                val_maskB_meter.update(len(masks_pred[0][0]))
+                
+                
+                def val_step():
+                    def forward_target():
+                        with torch.no_grad():
+                            h = target_encoder(imgs)
+                            h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                            B = len(h)
+                            # -- create targets (masked regions of h)
+                            h = apply_masks(h, masks_pred)
+                            h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                            return h
+
+                    def forward_context():
+                        with torch.no_grad():
+                            z = encoder(imgs, masks_enc)
+                            z = predictor(z, masks_enc, masks_pred)
+                            return z
+
+                    def loss_fn(z, h):
+                        loss = F.smooth_l1_loss(z, h)
+                        loss = AllReduce.apply(loss)
+                        return loss
+
+                    # Step 1. Forward
+                    with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                        h = forward_target()
+                        z = forward_context()
+                        loss = loss_fn(z, h)
+
+
+                    return (float(loss), grad_stats)
+                (loss, grad_stats), etime = gpu_timer(val_step)
+                val_loss_meter.update(loss)
+
+                assert not np.isnan(loss), 'loss is nan'
+
+            wandb.log({"val_loss":val_loss_meter.avg, "val_masksA": val_maskA_meter.avg, 
+                    "val_maskB": val_maskB_meter.avg})
+            logger.info('avg. val loss %.3f' % val_loss_meter.avg)
             
-
-            def load_imgs():
-                # -- unsupervised imgs
-                imgs = udata[0].to(device, non_blocking=True)
-                masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
-                masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
-                return (imgs, masks_1, masks_2)
-            imgs, masks_enc, masks_pred = load_imgs()
-            val_maskA_meter.update(len(masks_enc[0][0]))
-            val_maskB_meter.update(len(masks_pred[0][0]))
-            
-            
-            def val_step():
-                def forward_target():
-                    with torch.no_grad():
-                        h = target_encoder(imgs)
-                        h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
-                        B = len(h)
-                        # -- create targets (masked regions of h)
-                        h = apply_masks(h, masks_pred)
-                        h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
-                        return h
-
-                def forward_context():
-                    with torch.no_grad():
-                        z = encoder(imgs, masks_enc)
-                        z = predictor(z, masks_enc, masks_pred)
-                        return z
-
-                def loss_fn(z, h):
-                    loss = F.smooth_l1_loss(z, h)
-                    loss = AllReduce.apply(loss)
-                    return loss
-
-                # Step 1. Forward
-                with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
-                    h = forward_target()
-                    z = forward_context()
-                    loss = loss_fn(z, h)
-
-
-                return (float(loss), grad_stats)
-            (loss, grad_stats), etime = gpu_timer(val_step)
-            val_loss_meter.update(loss)
-
-            assert not np.isnan(loss), 'loss is nan'
-
-        wandb.log({"val_loss":val_loss_meter.avg, "val_masksA": val_maskA_meter.avg, 
-                   "val_maskB": val_maskB_meter.avg})
-        logger.info('avg. val loss %.3f' % val_loss_meter.avg)
-        
-        encoder.train()
-        target_encoder.train()
-        predictor.train()
-        optimizer.zero_grad()
+            encoder.train()
+            target_encoder.train()
+            predictor.train()
+            optimizer.zero_grad()
         
 
 

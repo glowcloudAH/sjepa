@@ -50,7 +50,7 @@ def make_mimic(
         pin_memory=pin_mem,
         num_workers=num_workers,
         persistent_workers=False)
-    logger.info('ImageNet unsupervised data loader created')
+    logger.info('Mimic unsupervised data loader created')
 
     return dataset, data_loader
 

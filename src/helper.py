@@ -141,6 +141,7 @@ def init_model_old(
     encoder.to(device)
     predictor.to(device)
     logger.info(encoder)
+    logger.info(predictor)
     return encoder, predictor
 
 
