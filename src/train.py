@@ -20,16 +20,17 @@ except Exception:
 import copy
 import logging
 import wandb
-
 import sys
 import yaml
 
 import numpy as np
 
 import torch
-#import torch.multiprocessing as mp
+import torch.multiprocessing as mp
 import torch.nn.functional as F
-#from torch.nn.parallel import DistributedDataParallel
+from torch.nn.parallel import DistributedDataParallel
+import torch.distributed as dist
+
 
 from src.masks.multiblock import MaskCollator as MBMaskCollator
 from src.masks.utils import apply_masks
@@ -37,13 +38,11 @@ from src.utils.distributed import (
     init_distributed,
     AllReduce
 )
-
 from src.utils.logging import (
     CSVLogger,
     gpu_timer,
     grad_logger,
     AverageMeter)
-
 from src.utils.tensors import repeat_interleave_batch
 from src.datasets.imagenet1k import make_imagenet1k
 from src.datasets.mimic import make_mimic
@@ -51,10 +50,9 @@ from src.datasets.mimic import make_mimic
 from src.helper import (
     load_checkpoint,
     init_model,
-    init_opt
-    )
-
+    init_opt)
 from src.transforms import make_transforms
+
 
 # --
 log_timings = True
@@ -92,16 +90,20 @@ def main(args, resume_preempt=False):
         torch.cuda.set_device(device)
 
     # -- DATA
-    use_gaussian_blur = args['data']['use_gaussian_blur']
-    use_horizontal_flip = args['data']['use_horizontal_flip']
-    use_color_distortion = args['data']['use_color_distortion']
-    color_jitter = args['data']['color_jitter_strength']
+    rescale_sigma = args['data']['rescale_sigma']
+    permutation = args['data']['permutation']
+    jitter = args['data']['jitter']
+    shift = args['data']['shift']
+    time_flip = args['data']['time_flip']
+    sign_flip = args['data']['sign_flip']
     # --
     batch_size = args['data']['batch_size']
     pin_mem = args['data']['pin_mem']
     num_workers = args['data']['num_workers']
     root_path = args['data']['root_path']
-    data_path = args['data']['data_path']
+    image_folder = args['data']['data_path']
+    val_folder = args['data']['val_path']
+    validation = args['data']['validation']
     crop_size = args['data']['crop_size']
     crop_scale = args['data']['crop_scale']
     # --
@@ -133,24 +135,23 @@ def main(args, resume_preempt=False):
     tag = args['logging']['write_tag']
 
     dump = os.path.join(folder, 'params-ijepa.yaml')
-    os.makedirs(os.path.dirname(dump), exist_ok=True)
     with open(dump, 'w') as f:
         yaml.dump(args, f)
     # ----------------------------------------------------------------------- #
 
-    #try:
-    #    mp.set_start_method('spawn')
-    #except Exception:
-    #    pass
+    try:
+        mp.set_start_method('spawn')
+    except Exception:
+        pass
 
     # -- init torch distributed backend
-    #world_size, rank = init_distributed()
-    #logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
-    #if rank > 0:
-    #    logger.setLevel(logging.ERROR)
+    world_size, rank = init_distributed()
+    logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
+    if rank > 0:
+        logger.setLevel(logging.ERROR)
 
     # -- log/checkpointing paths
-    log_file = os.path.join(folder, f'{tag}.csv')
+    log_file = os.path.join(folder, f'{tag}_r{rank}.csv')
     save_path = os.path.join(folder, f'{tag}' + '-ep{epoch}.pth.tar')
     latest_path = os.path.join(folder, f'{tag}-latest.pth.tar')
     load_path = None
@@ -189,28 +190,44 @@ def main(args, resume_preempt=False):
         min_keep=min_keep)
 
     transform = make_transforms(
-        crop_size=crop_size,
-        crop_scale=crop_scale,
-        gaussian_blur=use_gaussian_blur,
-        horizontal_flip=use_horizontal_flip,
-        color_distortion=use_color_distortion,
-        color_jitter=color_jitter)
+        rescale_sigma=rescale_sigma,
+        permutation=permutation,
+        jitter=jitter,
+        shift=shift,
+        time_flip=time_flip,
+        sign_flip=sign_flip)
 
     # -- init data-loaders/samplers
-    _, unsupervised_loader = make_mimic(#), unsupervised_sampler = make_mimic(
-            #transform=transform,
+    _, unsupervised_loader = make_mimic(#, unsupervised_sampler = make_mimic(
+            transform=None,
             batch_size=batch_size,
             collator=mask_collator,
             pin_mem=pin_mem,
             training=True,
             num_workers=num_workers,
-            #world_size=world_size,
-            #rank=rank,
+            world_size=world_size,
+            rank=rank,
             root_path=root_path,
-            data_path=data_path,
+            image_folder=image_folder,
             copy_data=copy_data,
             drop_last=True)
     ipe = len(unsupervised_loader)
+
+    if validation:
+        _, val_loader = make_mimic(
+                transform=None,
+                batch_size=batch_size,
+                collator=mask_collator,
+                pin_mem=pin_mem,
+                training=True,
+                num_workers=num_workers,
+                world_size=world_size,
+                rank=rank,
+                root_path=root_path,
+                image_folder=val_folder,
+                copy_data=copy_data,
+                drop_last=True
+        )
 
     # -- init optimizer and scheduler
     optimizer, scaler, scheduler, wd_scheduler = init_opt(
@@ -226,9 +243,10 @@ def main(args, resume_preempt=False):
         num_epochs=num_epochs,
         ipe_scale=ipe_scale,
         use_bfloat16=use_bfloat16)
-    #encoder = DistributedDataParallel(encoder, static_graph=True)
-    #predictor = DistributedDataParallel(predictor, static_graph=True)
-    #target_encoder = DistributedDataParallel(target_encoder)
+    if dist.is_initialized():
+        encoder = DistributedDataParallel(encoder, static_graph=True)
+        predictor = DistributedDataParallel(predictor, static_graph=True)
+        target_encoder = DistributedDataParallel(target_encoder)
     for p in target_encoder.parameters():
         p.requires_grad = False
 
@@ -261,15 +279,15 @@ def main(args, resume_preempt=False):
             'opt': optimizer.state_dict(),
             'scaler': None if scaler is None else scaler.state_dict(),
             'epoch': epoch,
-            #'loss': loss_meter.avg,
+            'loss': loss_meter.avg,
             'batch_size': batch_size,
-            #'world_size': world_size,
+            'world_size': world_size,
             'lr': lr
         }
-        #if rank == 0:
-        #    torch.save(save_dict, latest_path)
-        #    if (epoch + 1) % checkpoint_freq == 0:
-        #        torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
+        if rank == 0:
+            torch.save(save_dict, latest_path)
+            if (epoch + 1) % checkpoint_freq == 0:
+                torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
 
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
@@ -283,18 +301,28 @@ def main(args, resume_preempt=False):
         maskB_meter = AverageMeter()
         time_meter = AverageMeter()
 
+        ctx_enc_meter = AverageMeter()
+        target_enc_meter = AverageMeter()
+
+        val_loss_meter = AverageMeter()
+        val_predict_meter = AverageMeter()
+        val_maskB_meter = AverageMeter()
+        val_maskA_meter = AverageMeter()
+
+
         for itr, (udata, masks_enc, masks_pred) in enumerate(unsupervised_loader):
 
             def load_imgs():
                 # -- unsupervised imgs
-                imgs = udata.to(device, non_blocking=True)
+                imgs = udata[0].to(device, non_blocking=True)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
                 return (imgs, masks_1, masks_2)
             imgs, masks_enc, masks_pred = load_imgs()
             maskA_meter.update(len(masks_enc[0][0]))
             maskB_meter.update(len(masks_pred[0][0]))
-
+            
+            
             def train_step():
                 _new_lr = scheduler.step()
                 _new_wd = wd_scheduler.step()
@@ -308,10 +336,12 @@ def main(args, resume_preempt=False):
                         # -- create targets (masked regions of h)
                         h = apply_masks(h, masks_pred)
                         h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                        target_enc_meter.update(h.mean())
                         return h
 
                 def forward_context():
                     z = encoder(imgs, masks_enc)
+                    ctx_enc_meter.update(z.mean())
                     z = predictor(z, masks_enc, masks_pred)
                     return z
 
@@ -348,8 +378,6 @@ def main(args, resume_preempt=False):
             loss_meter.update(loss)
             time_meter.update(etime)
 
-            wandb.log({'loss': loss})
-
             # -- Logging
             def log_stats():
                 csv_logger.log(epoch + 1, itr, loss, maskA_meter.val, maskB_meter.val, etime)
@@ -375,14 +403,96 @@ def main(args, resume_preempt=False):
                                        grad_stats.last_layer,
                                        grad_stats.min,
                                        grad_stats.max))
+                    
+                    wandb.log({"loss":loss_meter.avg, 
+                                "masksA": maskA_meter.val, 
+                                "maskB": maskB_meter.val,
+                                "wd":_new_wd, 
+                                "lr": _new_lr,
+                                "context encoding avg": ctx_enc_meter.avg,
+                                "target encoding avg": target_enc_meter.avg,
+                                "context encoding min": ctx_enc_meter.min,
+                                "target encoding min": target_enc_meter.min,
+                                "context encoding max": ctx_enc_meter.max,
+                                "target encoding max": target_enc_meter.max,
+                                "grad_stats_first": grad_stats.first_layer,
+                                "grad_stats_last": grad_stats.last_layer,
+                                "grad_stats min": grad_stats.min,
+                                "grad_stats max": grad_stats.max})
+
 
             log_stats()
 
             assert not np.isnan(loss), 'loss is nan'
 
+        
+        
         # -- Save Checkpoint after every epoch
         logger.info('avg. loss %.3f' % loss_meter.avg)
         save_checkpoint(epoch+1)
+        
+        if validation:
+            encoder.eval()
+            target_encoder.eval()
+            predictor.eval()
+            for itr, (udata, masks_enc, masks_pred) in enumerate(val_loader):
+                
+
+                def load_imgs():
+                    # -- unsupervised imgs
+                    imgs = udata[0].to(device, non_blocking=True)
+                    masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
+                    masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
+                    return (imgs, masks_1, masks_2)
+                imgs, masks_enc, masks_pred = load_imgs()
+                val_maskA_meter.update(len(masks_enc[0][0]))
+                val_maskB_meter.update(len(masks_pred[0][0]))
+                
+                
+                def val_step():
+                    def forward_target():
+                        with torch.no_grad():
+                            h = target_encoder(imgs)
+                            h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                            B = len(h)
+                            # -- create targets (masked regions of h)
+                            h = apply_masks(h, masks_pred)
+                            h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                            return h
+
+                    def forward_context():
+                        with torch.no_grad():
+                            z = encoder(imgs, masks_enc)
+                            z = predictor(z, masks_enc, masks_pred)
+                            return z
+
+                    def loss_fn(z, h):
+                        loss = F.smooth_l1_loss(z, h)
+                        loss = AllReduce.apply(loss)
+                        return loss
+
+                    # Step 1. Forward
+                    with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                        h = forward_target()
+                        z = forward_context()
+                        loss = loss_fn(z, h)
+
+
+                    return (float(loss), grad_stats)
+                (loss, grad_stats), etime = gpu_timer(val_step)
+                val_loss_meter.update(loss)
+
+                assert not np.isnan(loss), 'loss is nan'
+
+            wandb.log({"val_loss":val_loss_meter.avg, "val_masksA": val_maskA_meter.avg, 
+                    "val_maskB": val_maskB_meter.avg})
+            logger.info('avg. val loss %.3f' % val_loss_meter.avg)
+            
+            encoder.train()
+            target_encoder.train()
+            predictor.train()
+            optimizer.zero_grad()
+        
 
 
 if __name__ == "__main__":

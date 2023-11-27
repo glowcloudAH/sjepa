@@ -451,6 +451,7 @@ class VisionTransformer(nn.Module):
         if masks is not None:
             x = apply_masks(x, masks)
 
+
         # -- fwd prop
         for i, blk in enumerate(self.blocks):
             x = blk(x)
@@ -483,6 +484,12 @@ def vit_predictor(**kwargs):
         **kwargs)
     return model
 
+
+def vit_min(patch_size=16, **kwargs):
+    model = VisionTransformer(
+        patch_size=patch_size, embed_dim=12, depth=1, num_heads=1, mlp_ratio=4,
+        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
 
 def vit_tiny(patch_size=16, **kwargs):
     model = VisionTransformer(
@@ -527,6 +534,7 @@ def vit_giant(patch_size=16, **kwargs):
 
 
 VIT_EMBED_DIMS = {
+    'vit_min': 12,
     'vit_tiny': 192,
     'vit_small': 384,
     'vit_base': 768,

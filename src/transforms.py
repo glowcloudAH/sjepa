@@ -12,11 +12,37 @@ from PIL import ImageFilter
 import torch
 import torchvision.transforms as transforms
 
+import src.utils.ecg_augmentations as augs
+
 _GLOBAL_SEED = 0
 logger = getLogger()
 
-
 def make_transforms(
+    rescale_sigma=0.5,
+    permutation=False,
+    jitter=(0.2, 0.6),
+    shift=(250,30),
+    time_flip=0,
+    sign_flip=0,
+):
+    logger.info('making ecg data transforms')
+
+    transform_list = []
+    transform_list += [augs.Rescaling(rescale_sigma)]
+    if permutation:
+        transform_list += [augs.Permutation()]
+    transform_list += [augs.Jitter(sigma=jitter[0], amplitude=jitter[1])]
+    transform_list += [augs.Shift(fs=shift[0], padding_len_sec=shift[1])]
+    transform_list += [augs.TimeFlip(time_flip)]
+    transform_list += [augs.SignFlip(sign_flip)]
+    
+    #transform_list += [transforms.ToTensor()]
+
+    transform = transforms.Compose(transform_list)
+    return transform
+
+
+def make_transforms_old(
     crop_size=224,
     crop_scale=(0.3, 1.0),
     color_jitter=1.0,

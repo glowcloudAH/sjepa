@@ -26,20 +26,20 @@ def make_mimic(
     world_size=1,
     rank=0,
     root_path=None,
-    data_path=None,
+    image_folder=None,
     training=True,
     copy_data=False,
     drop_last=True,
     subset_file=None
 ):
     dataset = Mimic(
-        mimic_tensor=data_path,
+        mimic_tensor=image_folder,
         transform=transform)
     
     #if subset_file is not None:
     #    dataset = ImageNetSubset(dataset, subset_file)
 
-    logger.info('ImageNet dataset created')
+    logger.info('Mimic dataset created')
     
 
     data_loader = DataLoader(
@@ -50,7 +50,7 @@ def make_mimic(
         pin_memory=pin_mem,
         num_workers=num_workers,
         persistent_workers=False)
-    logger.info('ImageNet unsupervised data loader created')
+    logger.info('Mimic unsupervised data loader created')
 
     return dataset, data_loader
 
@@ -67,7 +67,8 @@ class Mimic(Dataset):
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
-        self.mimic_tensor = torch.load(mimic_tensor).float()
+        self.mimic_tensor = torch.load(mimic_tensor+".pt").float()
+        self.labels = torch.load(mimic_tensor+"_labels.pt").int()
         self.transform = transform
 
     def __len__(self):
@@ -86,6 +87,6 @@ class Mimic(Dataset):
 
         sample = torch.nan_to_num(sample)
 
-
-        return sample
+        target = torch.zeros(sample.shape[0])
+        return (sample, target)
 
