@@ -53,7 +53,7 @@ def process_main(rank, fname, world_size, devices):
         project="initial-tests",
         
         # track hyperparameters and run metadata
-        config=args
+        config=params
     )
 
     world_size, rank = init_distributed(rank_and_world_size=(rank, world_size))
@@ -66,9 +66,9 @@ if __name__ == '__main__':
 
     num_gpus = len(args.devices)
     mp.set_start_method('spawn')
-    process_main(0, args.fname, num_gpus, args.devices)
-    #for rank in range(num_gpus):
-    #    mp.Process(
-    #        target=process_main,
-    #        args=(rank, args.fname, num_gpus, args.devices)
-    #    ).start()
+    #process_main(0, args.fname, num_gpus, args.devices)
+    for rank in range(num_gpus):
+        mp.Process(
+            target=process_main,
+            args=(rank, args.fname, num_gpus, args.devices)
+        ).start()

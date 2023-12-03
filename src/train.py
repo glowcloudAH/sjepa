@@ -45,7 +45,7 @@ from src.utils.logging import (
     AverageMeter)
 from src.utils.tensors import repeat_interleave_batch
 from src.datasets.imagenet1k import make_imagenet1k
-from src.datasets.mimic import make_mimic
+from src.datasets.ukbb import make_ukbb
 
 from src.helper import (
     load_checkpoint,
@@ -91,9 +91,9 @@ def main(args, resume_preempt=False):
 
     # -- DATA
     rescale_sigma = args['data']['rescale_sigma']
-    permutation = args['data']['permutation']
+    ftsurrogate = args['data']['ftsurrogate']
     jitter = args['data']['jitter']
-    shift = args['data']['shift']
+    spec_augment = args['data']['spec_augment']
     time_flip = args['data']['time_flip']
     sign_flip = args['data']['sign_flip']
     # --
@@ -190,15 +190,17 @@ def main(args, resume_preempt=False):
         min_keep=min_keep)
 
     transform = make_transforms(
-        rescale_sigma=rescale_sigma,
-        permutation=permutation,
+        crop_resizing=crop_size,
+        ftsurrogate=ftsurrogate,
         jitter=jitter,
-        shift=shift,
+        rescale_sigma=rescale_sigma,
         time_flip=time_flip,
-        sign_flip=sign_flip)
+        sign_flip=sign_flip,
+        spec_augment = spec_augment
+        )
 
     # -- init data-loaders/samplers
-    _, unsupervised_loader = make_mimic(#, unsupervised_sampler = make_mimic(
+    _, unsupervised_loader, unsupervised_sampler  = make_ukbb(#, unsupervised_sampler = make_mimic(
             transform=None,
             batch_size=batch_size,
             collator=mask_collator,
@@ -208,13 +210,13 @@ def main(args, resume_preempt=False):
             world_size=world_size,
             rank=rank,
             root_path=root_path,
-            image_folder=image_folder,
+            data_file=image_folder,
             copy_data=copy_data,
             drop_last=True)
     ipe = len(unsupervised_loader)
 
     if validation:
-        _, val_loader = make_mimic(
+        _, val_loader = make_ukbb(
                 transform=None,
                 batch_size=batch_size,
                 collator=mask_collator,
@@ -224,7 +226,7 @@ def main(args, resume_preempt=False):
                 world_size=world_size,
                 rank=rank,
                 root_path=root_path,
-                image_folder=val_folder,
+                data_file=val_folder,
                 copy_data=copy_data,
                 drop_last=True
         )
@@ -294,7 +296,7 @@ def main(args, resume_preempt=False):
         logger.info('Epoch %d' % (epoch + 1))
 
         # -- update distributed-data-loader epoch
-        #unsupervised_sampler.set_epoch(epoch)
+        unsupervised_sampler.set_epoch(epoch)
 
         loss_meter = AverageMeter()
         maskA_meter = AverageMeter()

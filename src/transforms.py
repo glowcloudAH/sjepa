@@ -12,29 +12,31 @@ from PIL import ImageFilter
 import torch
 import torchvision.transforms as transforms
 
-import src.utils.ecg_augmentations as augs
+from src.utils.ecg_augmentations import *
 
 _GLOBAL_SEED = 0
 logger = getLogger()
 
 def make_transforms(
-    rescale_sigma=0.5,
-    permutation=False,
+    crop_resizing=(12,5000),
+    ftsurrogate=0.1,
     jitter=(0.2, 0.6),
-    shift=(250,30),
+    rescale_sigma=0.5,
     time_flip=0,
     sign_flip=0,
+    spec_augment = (0.25,120)
+    
 ):
     logger.info('making ecg data transforms')
 
-    transform_list = []
-    transform_list += [augs.Rescaling(rescale_sigma)]
-    if permutation:
-        transform_list += [augs.Permutation()]
-    transform_list += [augs.Jitter(sigma=jitter[0], amplitude=jitter[1])]
-    transform_list += [augs.Shift(fs=shift[0], padding_len_sec=shift[1])]
-    transform_list += [augs.TimeFlip(time_flip)]
-    transform_list += [augs.SignFlip(sign_flip)]
+    transform_list = [CropResizing(fixed_crop_len=crop_resizing[-1], resize=False),]
+    transform_list += [FTSurrogate(phase_noise_magnitude=ftsurrogate),]
+    transform_list += [Jitter(sigma=jitter[0],amplitude=jitter[1])]
+    transform_list += [Rescaling(sigma=rescale_sigma)]
+    transform_list += [TimeFlip(prob=time_flip)]
+    transform_list += [SignFlip(prob=sign_flip)]
+    transform_list += [SpecAugment(masking_ratio=spec_augment[0], n_fft=spec_augment[1])]
+    
     
     #transform_list += [transforms.ToTensor()]
 

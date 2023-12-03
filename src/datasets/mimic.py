@@ -26,14 +26,14 @@ def make_mimic(
     world_size=1,
     rank=0,
     root_path=None,
-    image_folder=None,
+    data_file=None,
     training=True,
     copy_data=False,
     drop_last=True,
     subset_file=None
 ):
     dataset = Mimic(
-        mimic_tensor=image_folder,
+        mimic_tensor=data_file,
         transform=transform)
     
     #if subset_file is not None:
