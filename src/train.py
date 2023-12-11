@@ -31,6 +31,11 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
+
 
 from src.masks.multiblock import MaskCollator as MBMaskCollator
 from src.masks.utils import apply_masks
@@ -56,7 +61,7 @@ from src.transforms import make_transforms
 
 # --
 log_timings = True
-log_freq = 10
+log_freq = 20
 checkpoint_freq = 50
 # --
 
@@ -103,7 +108,8 @@ def main(args, resume_preempt=False):
     root_path = args['data']['root_path']
     image_folder = args['data']['data_path']
     val_folder = args['data']['val_path']
-    validation = args['data']['validation']
+    downstream_train_path = args['data']['downstream_train_path']
+    downstream_val_path = args['data']['downstream_val_path']
     crop_size = args['data']['crop_size']
     crop_scale = args['data']['crop_scale']
     # --
@@ -135,6 +141,7 @@ def main(args, resume_preempt=False):
     tag = args['logging']['write_tag']
 
     dump = os.path.join(folder, 'params-ijepa.yaml')
+    os.makedirs(os.path.dirname(dump), exist_ok=True)
     with open(dump, 'w') as f:
         yaml.dump(args, f)
     # ----------------------------------------------------------------------- #
@@ -199,24 +206,26 @@ def main(args, resume_preempt=False):
         spec_augment = spec_augment
         )
 
+    ipe = 2
     # -- init data-loaders/samplers
-    _, unsupervised_loader, unsupervised_sampler  = make_ukbb(#, unsupervised_sampler = make_mimic(
-            transform=None,
-            batch_size=batch_size,
-            collator=mask_collator,
-            pin_mem=pin_mem,
-            training=True,
-            num_workers=num_workers,
-            world_size=world_size,
-            rank=rank,
-            root_path=root_path,
-            data_file=image_folder,
-            copy_data=copy_data,
-            drop_last=True)
-    ipe = len(unsupervised_loader)
+    if image_folder != "None":
+        _, unsupervised_loader, unsupervised_sampler  = make_ukbb(#, unsupervised_sampler = make_mimic(
+                transform=None,
+                batch_size=batch_size,
+                collator=mask_collator,
+                pin_mem=pin_mem,
+                training=True,
+                num_workers=num_workers,
+                world_size=world_size,
+                rank=rank,
+                root_path=root_path,
+                data_file=image_folder,
+                copy_data=copy_data,
+                drop_last=True)
+        ipe = len(unsupervised_loader)
 
-    if validation:
-        _, val_loader = make_ukbb(
+    if val_folder != "None":
+        _, val_loader,_ = make_ukbb(
                 transform=None,
                 batch_size=batch_size,
                 collator=mask_collator,
@@ -230,6 +239,37 @@ def main(args, resume_preempt=False):
                 copy_data=copy_data,
                 drop_last=True
         )
+
+    if downstream_train_path != "None":
+        _, downstream_train_loader,_ = make_ukbb(
+                transform=None,
+                batch_size=batch_size,
+                collator=mask_collator,
+                pin_mem=pin_mem,
+                training=True,
+                num_workers=num_workers,
+                world_size=world_size,
+                rank=rank,
+                root_path=root_path,
+                data_file=downstream_train_path,
+                copy_data=copy_data,
+                drop_last=True
+        )
+        _, downstream_val_loader,_ = make_ukbb(
+                transform=None,
+                batch_size=batch_size,
+                collator=mask_collator,
+                pin_mem=pin_mem,
+                training=True,
+                num_workers=num_workers,
+                world_size=world_size,
+                rank=rank,
+                root_path=root_path,
+                data_file=downstream_val_path,
+                copy_data=copy_data,
+                drop_last=True
+        )
+    
 
     # -- init optimizer and scheduler
     optimizer, scaler, scheduler, wd_scheduler = init_opt(
@@ -292,140 +332,137 @@ def main(args, resume_preempt=False):
                 torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
 
     # -- TRAINING LOOP
+    
     for epoch in range(start_epoch, num_epochs):
         logger.info('Epoch %d' % (epoch + 1))
-
         # -- update distributed-data-loader epoch
         unsupervised_sampler.set_epoch(epoch)
-
         loss_meter = AverageMeter()
         maskA_meter = AverageMeter()
         maskB_meter = AverageMeter()
         time_meter = AverageMeter()
-
         ctx_enc_meter = AverageMeter()
         target_enc_meter = AverageMeter()
-
         val_loss_meter = AverageMeter()
         val_predict_meter = AverageMeter()
         val_maskB_meter = AverageMeter()
         val_maskA_meter = AverageMeter()
 
+        if image_folder != "None":
+            for itr, (udata, masks_enc, masks_pred) in enumerate(unsupervised_loader):
+                
+                def load_imgs():
+                    # -- unsupervised imgs
+                    imgs = udata[0].to(device, non_blocking=True)
+                    masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
+                    masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
+                    return (imgs, masks_1, masks_2)
+                imgs, masks_enc, masks_pred = load_imgs()
+                maskA_meter.update(len(masks_enc[0][0]))
+                maskB_meter.update(len(masks_pred[0][0]))
+                
+                
+                def train_step():
+                    _new_lr = scheduler.step()
+                    _new_wd = wd_scheduler.step()
+                    # --
 
-        for itr, (udata, masks_enc, masks_pred) in enumerate(unsupervised_loader):
+                    def forward_target():
+                        with torch.no_grad():
+                            h = target_encoder(imgs)
+                            h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                            B = len(h)
+                            # -- create targets (masked regions of h)
+                            h = apply_masks(h, masks_pred)
+                            h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                            target_enc_meter.update(h.mean())
+                            return h
 
-            def load_imgs():
-                # -- unsupervised imgs
-                imgs = udata[0].to(device, non_blocking=True)
-                masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
-                masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
-                return (imgs, masks_1, masks_2)
-            imgs, masks_enc, masks_pred = load_imgs()
-            maskA_meter.update(len(masks_enc[0][0]))
-            maskB_meter.update(len(masks_pred[0][0]))
-            
-            
-            def train_step():
-                _new_lr = scheduler.step()
-                _new_wd = wd_scheduler.step()
-                # --
+                    def forward_context():
+                        z = encoder(imgs, masks_enc)
+                        ctx_enc_meter.update(z.mean())
+                        z = predictor(z, masks_enc, masks_pred)
+                        return z
 
-                def forward_target():
+                    def loss_fn(z, h):
+                        loss = F.smooth_l1_loss(z, h)
+                        loss = AllReduce.apply(loss)
+                        return loss
+
+                    # Step 1. Forward
+                    with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                        h = forward_target()
+                        z = forward_context()
+                        loss = loss_fn(z, h)
+
+                    #  Step 2. Backward & step
+                    if use_bfloat16:
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        loss.backward()
+                        optimizer.step()
+                    grad_stats = grad_logger(encoder.named_parameters())
+                    optimizer.zero_grad()
+
+                    # Step 3. momentum update of target encoder
                     with torch.no_grad():
-                        h = target_encoder(imgs)
-                        h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
-                        B = len(h)
-                        # -- create targets (masked regions of h)
-                        h = apply_masks(h, masks_pred)
-                        h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
-                        target_enc_meter.update(h.mean())
-                        return h
+                        m = next(momentum_scheduler)
+                        for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
+                            param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
 
-                def forward_context():
-                    z = encoder(imgs, masks_enc)
-                    ctx_enc_meter.update(z.mean())
-                    z = predictor(z, masks_enc, masks_pred)
-                    return z
+                    return (float(loss), _new_lr, _new_wd, grad_stats)
+                (loss, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
+                loss_meter.update(loss)
+                time_meter.update(etime)
 
-                def loss_fn(z, h):
-                    loss = F.smooth_l1_loss(z, h)
-                    loss = AllReduce.apply(loss)
-                    return loss
-
-                # Step 1. Forward
-                with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
-                    h = forward_target()
-                    z = forward_context()
-                    loss = loss_fn(z, h)
-
-                #  Step 2. Backward & step
-                if use_bfloat16:
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    optimizer.step()
-                grad_stats = grad_logger(encoder.named_parameters())
-                optimizer.zero_grad()
-
-                # Step 3. momentum update of target encoder
-                with torch.no_grad():
-                    m = next(momentum_scheduler)
-                    for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
-                        param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
-
-                return (float(loss), _new_lr, _new_wd, grad_stats)
-            (loss, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
-            loss_meter.update(loss)
-            time_meter.update(etime)
-
-            # -- Logging
-            def log_stats():
-                csv_logger.log(epoch + 1, itr, loss, maskA_meter.val, maskB_meter.val, etime)
-                if (itr % log_freq == 0) or np.isnan(loss) or np.isinf(loss):
-                    logger.info('[%d, %5d] loss: %.3f '
-                                'masks: %.1f %.1f '
-                                '[wd: %.2e] [lr: %.2e] '
-                                '[mem: %.2e] '
-                                '(%.1f ms)'
-                                % (epoch + 1, itr,
-                                   loss_meter.avg,
-                                   maskA_meter.avg,
-                                   maskB_meter.avg,
-                                   _new_wd,
-                                   _new_lr,
-                                   torch.cuda.max_memory_allocated() / 1024.**2,
-                                   time_meter.avg))
-
-                    if grad_stats is not None:
-                        logger.info('[%d, %5d] grad_stats: [%.2e %.2e] (%.2e, %.2e)'
+                # -- Logging
+                def log_stats():
+                    csv_logger.log(epoch + 1, itr, loss, maskA_meter.val, maskB_meter.val, etime)
+                    if (itr % log_freq == 0) or np.isnan(loss) or np.isinf(loss):
+                        logger.info('[%d, %5d] loss: %.3f '
+                                    'masks: %.1f %.1f '
+                                    '[wd: %.2e] [lr: %.2e] '
+                                    '[mem: %.2e] '
+                                    '(%.1f ms)'
                                     % (epoch + 1, itr,
-                                       grad_stats.first_layer,
-                                       grad_stats.last_layer,
-                                       grad_stats.min,
-                                       grad_stats.max))
-                    
-                    wandb.log({"loss":loss_meter.avg, 
-                                "masksA": maskA_meter.val, 
-                                "maskB": maskB_meter.val,
-                                "wd":_new_wd, 
-                                "lr": _new_lr,
-                                "context encoding avg": ctx_enc_meter.avg,
-                                "target encoding avg": target_enc_meter.avg,
-                                "context encoding min": ctx_enc_meter.min,
-                                "target encoding min": target_enc_meter.min,
-                                "context encoding max": ctx_enc_meter.max,
-                                "target encoding max": target_enc_meter.max,
-                                "grad_stats_first": grad_stats.first_layer,
-                                "grad_stats_last": grad_stats.last_layer,
-                                "grad_stats min": grad_stats.min,
-                                "grad_stats max": grad_stats.max})
+                                    loss_meter.avg,
+                                    maskA_meter.avg,
+                                    maskB_meter.avg,
+                                    _new_wd,
+                                    _new_lr,
+                                    torch.cuda.max_memory_allocated() / 1024.**2,
+                                    time_meter.avg))
+
+                        if grad_stats is not None:
+                            logger.info('[%d, %5d] grad_stats: [%.2e %.2e] (%.2e, %.2e)'
+                                        % (epoch + 1, itr,
+                                        grad_stats.first_layer,
+                                        grad_stats.last_layer,
+                                        grad_stats.min,
+                                        grad_stats.max))
+                        
+                        wandb.log({"loss":loss_meter.avg, 
+                                    "masksA": maskA_meter.val, 
+                                    "maskB": maskB_meter.val,
+                                    "wd":_new_wd, 
+                                    "lr": _new_lr,
+                                    "context encoding avg": ctx_enc_meter.avg,
+                                    "target encoding avg": target_enc_meter.avg,
+                                    "context encoding min": ctx_enc_meter.min,
+                                    "target encoding min": target_enc_meter.min,
+                                    "context encoding max": ctx_enc_meter.max,
+                                    "target encoding max": target_enc_meter.max,
+                                    "grad_stats_first": grad_stats.first_layer,
+                                    "grad_stats_last": grad_stats.last_layer,
+                                    "grad_stats min": grad_stats.min,
+                                    "grad_stats max": grad_stats.max})
 
 
-            log_stats()
+                log_stats()
 
-            assert not np.isnan(loss), 'loss is nan'
+                assert not np.isnan(loss), 'loss is nan'
 
         
         
@@ -433,7 +470,7 @@ def main(args, resume_preempt=False):
         logger.info('avg. loss %.3f' % loss_meter.avg)
         save_checkpoint(epoch+1)
         
-        if validation:
+        if val_folder != "None":
             encoder.eval()
             target_encoder.eval()
             predictor.eval()
@@ -489,6 +526,109 @@ def main(args, resume_preempt=False):
             wandb.log({"val_loss":val_loss_meter.avg, "val_masksA": val_maskA_meter.avg, 
                     "val_maskB": val_maskB_meter.avg})
             logger.info('avg. val loss %.3f' % val_loss_meter.avg)
+            
+            encoder.train()
+            target_encoder.train()
+            predictor.train()
+            optimizer.zero_grad()
+
+        if downstream_train_path != "None":
+            encoder.eval()
+            target_encoder.eval()
+            predictor.eval()
+            encodings_train = torch.tensor([])
+            labels_train = torch.tensor([])
+            encodings_val = torch.tensor([])
+            labels_val = torch.tensor([])
+            for itr, (udata, masks_enc, masks_pred) in enumerate(downstream_train_loader):
+                def load_imgs():
+                    # -- unsupervised imgs
+                    imgs = udata[0].to(device, non_blocking=True)
+                    labels = udata[1]
+                    
+                    return (imgs, labels)
+                imgs, labels = load_imgs()
+                labels_train=torch.cat((labels_train,labels.cpu()), 0)
+
+                def forward_target():
+                    with torch.no_grad():
+                        h = target_encoder(imgs)
+                        h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                        return h
+
+
+                # Step 1. Forward
+                with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                    h = forward_target() # shape of h: (B,600,768) e.g. B=32
+                    encodings_train = torch.cat((encodings_train,h.detach().cpu()), 0)
+
+
+            for itr, (udata, masks_enc, masks_pred) in enumerate(downstream_val_loader):
+                def load_imgs():
+                    # -- unsupervised imgs
+                    imgs = udata[0].to(device, non_blocking=True)
+                    labels = udata[1]
+                    return (imgs, labels)
+                imgs, labels = load_imgs()
+                labels_val=torch.cat((labels_val,labels.cpu()), 0)
+
+                def forward_target():
+                    with torch.no_grad():
+                        h = target_encoder(imgs)
+                        h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                        return h
+
+
+                # Step 1. Forward
+                with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                    h = forward_target()
+                    
+                    encodings_val=torch.cat((encodings_val,h.detach().cpu()), 0)
+
+            encodings_train = encodings_train.mean(dim=1)
+            encodings_val = encodings_val.mean(dim=1)
+            pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000,
+                                                                      random_state=0))
+
+            pipe.fit(
+                np.asarray(encodings_train), #.reshape(len(encodings_train),-1)
+                np.asarray(labels_train).flatten())
+            
+            train_proba = pipe.predict_proba(
+                np.asarray(encodings_train),  #.reshape(len(encodings_train),-1)
+                )[:, 1]
+            
+            train_pred = pipe.predict(
+                np.asarray(encodings_train),  #.reshape(len(encodings_train),-1)
+                )
+            
+            train_acc = accuracy_score(np.asarray(labels_train).flatten(), train_pred)
+            train_auc = roc_auc_score(np.asarray(labels_train).flatten(), train_proba)
+            train_f1 = f1_score(np.asarray(labels_train).flatten(), train_pred)
+            
+            val_pred = pipe.predict(
+                np.asarray(encodings_val), #.reshape(len(encodings_val),-1)
+                )
+            
+            val_proba = pipe.predict_proba(
+                np.asarray(encodings_val), #.reshape(len(encodings_val),-1)
+                )[:, 1]
+            
+            val_acc = accuracy_score(np.asarray(labels_val).flatten(), val_pred)
+            val_auc = roc_auc_score(np.asarray(labels_val).flatten(), val_proba)
+            val_f1 = f1_score(np.asarray(labels_val).flatten(), val_pred)
+            
+            
+            
+            wandb.log({"downstream_train_acc": train_acc, 
+                       "downstream_val_acc": val_acc,
+                       "downstream_train_auc": train_auc, 
+                       "downstream_val_auc": val_auc,
+                       "downstream_train_f1": train_f1, 
+                       "downstream_val_f1": val_f1})
+                
+
+            
             
             encoder.train()
             target_encoder.train()

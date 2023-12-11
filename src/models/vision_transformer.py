@@ -485,9 +485,9 @@ def vit_predictor(**kwargs):
     return model
 
 
-def vit_min(patch_size=16, **kwargs):
+def vit_custom(patch_size=16, **kwargs):
     model = VisionTransformer(
-        patch_size=patch_size, embed_dim=12, depth=1, num_heads=1, mlp_ratio=4,
+        patch_size=patch_size, embed_dim=384, depth=3, num_heads=6, mlp_ratio=4,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 

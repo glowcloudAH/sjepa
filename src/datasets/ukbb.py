@@ -72,10 +72,13 @@ class Ukbb(Dataset):
         self, data_path: str, labels_path: str, transform):
         super(Ukbb, self).__init__()
         logger.info('Initialized UKBB')
-        self.data = torch.load(data_path)
-        self.data = [d.unsqueeze(0) for d in self.data]
+        self.data = torch.load(data_path, map_location=torch.device('cpu'))
+        self.data = [d.clone().unsqueeze(0) for d in self.data]
         #self.data = [d[:, :args.input_electrodes, :] for d in self.data]
-        self.labels = torch.load(labels_path)
+        try:
+            self.labels = torch.load(labels_path, map_location=torch.device('cpu'))
+        except:
+           self.labels = torch.zeros(len(self.data))
 
         self.transform_train = transform
         
@@ -93,10 +96,11 @@ class Ukbb(Dataset):
       return len(self.data)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-      data, label = self.data[index], self.labels[index]
+      data = self.data[index]
+      label = self.labels[index]
       if self.transform_train:
         data = self.transform_train(data)
       
-
+      data = data.clone()
       return data, label
 

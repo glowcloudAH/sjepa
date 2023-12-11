@@ -6,24 +6,25 @@ data:
   crop_size: 
   - 12
   - 5000
-  data_path: ecgs_train_BMI_balanced_noBase_gn.pt
-  validation: false
+  data_path: ecgs_train_ecg_imaging_noBase_gn.pt
   val_path: None
-  num_workers: 1
+  downstream_train_path: ecgs_train_flutter_all_balanced_noBase_gn.pt
+  downstream_val_path: ecgs_val_flutter_all_balanced_noBase_gn.pt
+  num_workers: 0
   pin_mem: true
   root_path: /vol/aimspace/projects/ukbb/data/cardiac/cardiac_segmentations/projects/ecg/
-  rescale_sigma: 0
+  rescale_sigma: 0.5
   ftsurrogate: 0.1
   jitter: 
-  - 0
-  - 0
+  - 0.25
+  - 0.6
   spec_augment: 
   - 0.25
   - 120
-  time_flip: 0
-  sign_flip: 0
+  time_flip: 0.5
+  sign_flip: 0.5
 logging:
-  folder: ./logs/vitb14.224-bs.2048-ep.3/
+  folder: ./logs/vitc14.224-bs.2048-ep.300/
   write_tag: jepa
 mask:
   allow_overlap: false
@@ -31,7 +32,7 @@ mask:
   - 0.2 #0.75
   - 0.3 #1.5
   enc_mask_scale:
-  - 1.0
+  - 0.85
   - 1.0
   min_keep: 10
   num_enc_masks: 1
@@ -45,20 +46,20 @@ mask:
 meta:
   copy_data: false
   load_checkpoint: false
-  model_name: vit_base
-  pred_depth: 4
-  pred_emb_dim: 192
+  model_name: vit_custom
+  pred_depth: 1
+  pred_emb_dim: 96
   read_checkpoint: null
   use_bfloat16: false
 optimization:
   ema:
   - 0.996
   - 1.0
-  epochs: 3
+  epochs: 300
   final_lr: 1.0e-06
   final_weight_decay: 0.4
   ipe_scale: 1.0
-  lr: 1e-4 #0.001
-  start_lr: 1e-5 #0.0002
-  warmup: 3
+  lr: 0.001
+  start_lr: 0.0002
+  warmup: 40
   weight_decay: 0.04
