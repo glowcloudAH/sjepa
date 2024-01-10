@@ -36,6 +36,8 @@ def process_main(rank, fname, world_size, devices):
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
+    
+
     logger.info(f'called-params {fname}')
 
 
@@ -48,6 +50,7 @@ def process_main(rank, fname, world_size, devices):
         pp = pprint.PrettyPrinter(indent=4)
         pp.pprint(params)
 
+    
     wandb.init(
         # set the wandb project where this run will be logged
         project="initial-tests",
@@ -55,6 +58,7 @@ def process_main(rank, fname, world_size, devices):
         # track hyperparameters and run metadata
         config=params
     )
+
 
     world_size, rank = init_distributed(rank_and_world_size=(rank, world_size))
     logger.info(f'Running... (rank: {rank}/{world_size})')

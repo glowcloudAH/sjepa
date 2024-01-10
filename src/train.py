@@ -137,8 +137,11 @@ def main(args, resume_preempt=False):
     final_lr = args['optimization']['final_lr']
 
     # -- LOGGING
-    folder = args['logging']['folder']
+    #folder = args['logging']['folder']
     tag = args['logging']['write_tag']
+
+    
+    folder = wandb.run.dir
 
     dump = os.path.join(folder, 'params-ijepa.yaml')
     os.makedirs(os.path.dirname(dump), exist_ok=True)
@@ -206,7 +209,7 @@ def main(args, resume_preempt=False):
         spec_augment = spec_augment
         )
 
-    ipe = 2
+    ipe = 1
     # -- init data-loaders/samplers
     if image_folder != "None":
         _, unsupervised_loader, unsupervised_sampler  = make_ukbb(#, unsupervised_sampler = make_mimic(
@@ -550,16 +553,16 @@ def main(args, resume_preempt=False):
                 imgs, labels = load_imgs()
                 labels_train=torch.cat((labels_train,labels.cpu()), 0)
 
-                def forward_target():
+                def forward():
                     with torch.no_grad():
-                        h = target_encoder(imgs)
+                        h = encoder(imgs)
                         h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
                         return h
 
 
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
-                    h = forward_target() # shape of h: (B,600,768) e.g. B=32
+                    h = forward() # shape of h: (B,600,768) e.g. B=32
                     encodings_train = torch.cat((encodings_train,h.detach().cpu()), 0)
 
 
@@ -572,16 +575,16 @@ def main(args, resume_preempt=False):
                 imgs, labels = load_imgs()
                 labels_val=torch.cat((labels_val,labels.cpu()), 0)
 
-                def forward_target():
+                def forward():
                     with torch.no_grad():
-                        h = target_encoder(imgs)
+                        h = encoder(imgs)
                         h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
                         return h
 
 
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
-                    h = forward_target()
+                    h = forward()
                     
                     encodings_val=torch.cat((encodings_val,h.detach().cpu()), 0)
 
