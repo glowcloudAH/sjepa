@@ -19,6 +19,7 @@ logger = getLogger()
 
 def make_transforms(
     crop_resizing=(12,5000),
+    crop_scale=(0.5,1),
     ftsurrogate=0.1,
     jitter=(0.2, 0.6),
     rescale_sigma=0.5,
@@ -29,7 +30,7 @@ def make_transforms(
 ):
     logger.info('making ecg data transforms')
 
-    transform_list = [CropResizing(fixed_crop_len=crop_resizing[-1], resize=False),]
+    transform_list = [CropResizing(lower_bnd=crop_scale[0], upper_bnd=crop_scale[1], resize=True),]
     transform_list += [FTSurrogate(phase_noise_magnitude=ftsurrogate),]
     transform_list += [Jitter(sigma=jitter[0],amplitude=jitter[1])]
     transform_list += [Rescaling(sigma=rescale_sigma)]

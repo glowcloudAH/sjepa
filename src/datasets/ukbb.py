@@ -50,7 +50,8 @@ def make_ukbb(
     dist_sampler = torch.utils.data.distributed.DistributedSampler(
         dataset=dataset,
         num_replicas=world_size,
-        rank=rank)
+        rank=rank
+        )
     
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -60,7 +61,7 @@ def make_ukbb(
         drop_last=drop_last,
         pin_memory=pin_mem,
         num_workers=num_workers,
-        persistent_workers=False)
+        persistent_workers=True)
     logger.info('Ukbb unsupervised data loader created')
 
     return dataset, data_loader, dist_sampler
@@ -73,7 +74,7 @@ class Ukbb(Dataset):
         super(Ukbb, self).__init__()
         logger.info('Initialized UKBB')
         self.data = torch.load(data_path, map_location=torch.device('cpu'))
-        self.data = [d.clone().unsqueeze(0) for d in self.data]
+        #self.data = [d.clone().unsqueeze(0) for d in self.data]
         #self.data = [d[:, :args.input_electrodes, :] for d in self.data]
         try:
             self.labels = torch.load(labels_path, map_location=torch.device('cpu'))
@@ -96,11 +97,12 @@ class Ukbb(Dataset):
       return len(self.data)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-      data = self.data[index]
+      #data = torch.load(self.data, map_location=torch.device('cpu'))[index].unsqueeze(0)
+      data = self.data[index].unsqueeze(0)
       label = self.labels[index]
       if self.transform_train:
         data = self.transform_train(data)
       
-      data = data.clone()
+      #data = data.clone()
       return data, label
 

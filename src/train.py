@@ -17,6 +17,8 @@ try:
 except Exception:
     pass
 
+# os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+
 import copy
 import logging
 import wandb
@@ -30,6 +32,8 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
+
+from torchsummary import summary
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -49,6 +53,8 @@ from src.utils.logging import (
     grad_logger,
     AverageMeter)
 from src.utils.tensors import repeat_interleave_batch
+from src.utils.criteria import *
+
 from src.datasets.imagenet1k import make_imagenet1k
 from src.datasets.ukbb import make_ukbb
 
@@ -59,9 +65,11 @@ from src.helper import (
 from src.transforms import make_transforms
 
 
+
+
 # --
 log_timings = True
-log_freq = 20
+log_freq = 10
 checkpoint_freq = 50
 # --
 
@@ -187,6 +195,7 @@ def main(args, resume_preempt=False):
         model_name=model_name)
     target_encoder = copy.deepcopy(encoder)
 
+
     # -- make data transforms
     mask_collator = MBMaskCollator(
         input_size=crop_size,
@@ -201,6 +210,7 @@ def main(args, resume_preempt=False):
 
     transform = make_transforms(
         crop_resizing=crop_size,
+        crop_scale=crop_scale,
         ftsurrogate=ftsurrogate,
         jitter=jitter,
         rescale_sigma=rescale_sigma,
@@ -213,7 +223,7 @@ def main(args, resume_preempt=False):
     # -- init data-loaders/samplers
     if image_folder != "None":
         _, unsupervised_loader, unsupervised_sampler  = make_ukbb(#, unsupervised_sampler = make_mimic(
-                transform=None,
+                transform=transform,
                 batch_size=batch_size,
                 collator=mask_collator,
                 pin_mem=pin_mem,
@@ -298,6 +308,10 @@ def main(args, resume_preempt=False):
     # -- momentum schedule
     momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
                           for i in range(int(ipe*num_epochs*ipe_scale)+1))
+    
+
+    #summary(encoder,  (1, 12, 5000), batch_size=batch_size)
+    #summary(predictor,(146, 192), batch_size=batch_size)
 
     start_epoch = 0
     # -- load training checkpoint
@@ -346,6 +360,11 @@ def main(args, resume_preempt=False):
         time_meter = AverageMeter()
         ctx_enc_meter = AverageMeter()
         target_enc_meter = AverageMeter()
+        ctx_norm_meter = AverageMeter()
+        target_norm_meter = AverageMeter()
+        cosine_sim_meter = AverageMeter()
+        closest_pred_acc_meter = AverageMeter()
+        closest_pred_prob_meter = AverageMeter()
         val_loss_meter = AverageMeter()
         val_predict_meter = AverageMeter()
         val_maskB_meter = AverageMeter()
@@ -353,6 +372,7 @@ def main(args, resume_preempt=False):
 
         if image_folder != "None":
             for itr, (udata, masks_enc, masks_pred) in enumerate(unsupervised_loader):
+
                 
                 def load_imgs():
                     # -- unsupervised imgs
@@ -375,17 +395,19 @@ def main(args, resume_preempt=False):
                             h = target_encoder(imgs)
                             h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
                             B = len(h)
+                            target_enc_meter.update(h.mean())
+                            target_norm_meter.update(torch.norm(h,2))
                             # -- create targets (masked regions of h)
                             h = apply_masks(h, masks_pred)
                             h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
-                            target_enc_meter.update(h.mean())
                             return h
 
                     def forward_context():
                         z = encoder(imgs, masks_enc)
                         ctx_enc_meter.update(z.mean())
-                        z = predictor(z, masks_enc, masks_pred)
-                        return z
+                        ctx_norm_meter.update(torch.norm(z,2))
+                        z_pred = predictor(z, masks_enc, masks_pred)
+                        return z_pred,z
 
                     def loss_fn(z, h):
                         loss = F.smooth_l1_loss(z, h)
@@ -395,8 +417,11 @@ def main(args, resume_preempt=False):
                     # Step 1. Forward
                     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
                         h = forward_target()
-                        z = forward_context()
+                        z, ctx = forward_context()
                         loss = loss_fn(z, h)
+                        cosine_sim_meter.update(global_pooled_cosine_sim_score(ctx,h.view(num_pred_masks,batch_size,h.shape[-2], h.shape[-1])))
+                        closest_pred_acc_meter.update(closest_prediction_accuracy(h,z))
+                        closest_pred_prob_meter.update(closest_prediction_probability(h,z))
 
                     #  Step 2. Backward & step
                     if use_bfloat16:
@@ -444,7 +469,8 @@ def main(args, resume_preempt=False):
                                         grad_stats.first_layer,
                                         grad_stats.last_layer,
                                         grad_stats.min,
-                                        grad_stats.max))
+                                        grad_stats.max))  
+                                                      
                         
                         wandb.log({"loss":loss_meter.avg, 
                                     "masksA": maskA_meter.val, 
@@ -453,10 +479,15 @@ def main(args, resume_preempt=False):
                                     "lr": _new_lr,
                                     "context encoding avg": ctx_enc_meter.avg,
                                     "target encoding avg": target_enc_meter.avg,
+                                    "context norm avg": ctx_norm_meter.avg,
+                                    "target norm avg": target_norm_meter.avg,
                                     "context encoding min": ctx_enc_meter.min,
                                     "target encoding min": target_enc_meter.min,
                                     "context encoding max": ctx_enc_meter.max,
                                     "target encoding max": target_enc_meter.max,
+                                    "cosine similarity context targets": cosine_sim_meter.avg,
+                                    "closest prediction accuracy": closest_pred_acc_meter.avg,
+                                    "closest prediction probability": closest_pred_prob_meter.avg,
                                     "grad_stats_first": grad_stats.first_layer,
                                     "grad_stats_last": grad_stats.last_layer,
                                     "grad_stats min": grad_stats.min,
@@ -555,7 +586,7 @@ def main(args, resume_preempt=False):
 
                 def forward():
                     with torch.no_grad():
-                        h = encoder(imgs)
+                        h = target_encoder(imgs)
                         h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
                         return h
 
@@ -577,7 +608,7 @@ def main(args, resume_preempt=False):
 
                 def forward():
                     with torch.no_grad():
-                        h = encoder(imgs)
+                        h = target_encoder(imgs)
                         h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
                         return h
 

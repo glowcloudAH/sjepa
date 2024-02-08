@@ -21,7 +21,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     '--fname', type=str,
     help='name of config file to load',
-    default='configs.yaml')
+    default='/vol/aimspace/users/seel/sjepa/configs/configs_vitt.yaml')
 parser.add_argument(
     '--devices', type=str, nargs='+', default=['cuda:0'],
     help='which devices to use on local machine')
