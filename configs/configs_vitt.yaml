@@ -1,5 +1,5 @@
 data:
-  batch_size: 192
+  batch_size: 128
   crop_scale:
   - 0.5
   - 1.0
@@ -7,10 +7,10 @@ data:
   - 12
   - 5000
   data_path: ecgs_train_ecg_imaging_noBase_gn.pt
-  val_path: None
+  val_path: ecgs_val_ecg_imaging_noBase_gn.pt
   downstream_train_path: ecgs_train_flutter_all_balanced_noBase_gn.pt
   downstream_val_path: ecgs_val_flutter_all_balanced_noBase_gn.pt
-  num_workers: 10
+  num_workers: 15
   pin_mem: true
   root_path: /vol/aimspace/projects/ukbb/data/cardiac/cardiac_segmentations/projects/ecg/
   rescale_sigma: 0.5
@@ -41,8 +41,8 @@ mask:
   - 1
   - 100
   pred_mask_scale:
-  - 0.15
-  - 0.2
+  - 0.15 #0.15
+  - 0.2 #0.2
 meta:
   copy_data: false
   load_checkpoint: false

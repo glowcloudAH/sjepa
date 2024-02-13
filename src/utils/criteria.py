@@ -24,7 +24,54 @@ def closest_prediction_probability(predictions, targets):
     
     diag = torch.diag(sim_prob)
 
-    return diag.mean()
+    results = {}
+    results["mean"] = diag.mean() * len(diag)
+    results["std"] = torch.std(diag)
+    results["min"] = diag.min() * len(diag)
+    results["max"] = diag.max() * len(diag)
+
+    return results
+
+
+def split_batch_and_targets(tensor, num_targets = 4, batchsize=128):
+
+    assert tensor.dim()==2
+    tensor = torch.permute(tensor, (1, 0))
+
+    tensor = tensor.reshape(tensor.shape[0], num_targets, batchsize)
+
+    tensor = torch.permute(tensor, (2, 1, 0))
+
+    return tensor
+
+
+def closest_prediction_probability_per_ecg(predictions, targets, num_targets = 4, batchsize=128):
+
+
+    preds_pooled = predictions.mean(dim=1)
+    preds = split_batch_and_targets(preds_pooled, num_targets=num_targets, batchsize=batchsize)
+
+    targets_pooled = targets.mean(dim=1)
+    target = split_batch_and_targets(targets_pooled, num_targets=num_targets, batchsize=batchsize)
+
+    temp = []
+
+    for p,t in zip(preds,target):
+                
+        sim_mat = torch.Tensor(csim(p.detach().cpu(),t.detach().cpu()))
+        sim_prob = F.softmax(sim_mat, dim=0)
+            
+        diag = torch.diag(sim_prob)
+        temp.append(diag.mean())
+
+    temp = torch.Tensor(temp)
+    results = {}
+    results["mean"] = temp.mean() 
+    results["std"] = torch.std(temp)
+    results["min"] = temp.min() 
+    results["max"] = temp.max() 
+
+    return results
 
 
 

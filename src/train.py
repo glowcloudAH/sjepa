@@ -234,7 +234,8 @@ def main(args, resume_preempt=False):
                 root_path=root_path,
                 data_file=image_folder,
                 copy_data=copy_data,
-                drop_last=True)
+                drop_last=True,
+                persistent_workers=True)
         ipe = len(unsupervised_loader)
 
     if val_folder != "None":
@@ -244,7 +245,7 @@ def main(args, resume_preempt=False):
                 collator=mask_collator,
                 pin_mem=pin_mem,
                 training=True,
-                num_workers=num_workers,
+                num_workers=0,
                 world_size=world_size,
                 rank=rank,
                 root_path=root_path,
@@ -260,7 +261,7 @@ def main(args, resume_preempt=False):
                 collator=mask_collator,
                 pin_mem=pin_mem,
                 training=True,
-                num_workers=num_workers,
+                num_workers=0,
                 world_size=world_size,
                 rank=rank,
                 root_path=root_path,
@@ -274,7 +275,7 @@ def main(args, resume_preempt=False):
                 collator=mask_collator,
                 pin_mem=pin_mem,
                 training=True,
-                num_workers=num_workers,
+                num_workers=0,
                 world_size=world_size,
                 rank=rank,
                 root_path=root_path,
@@ -365,6 +366,9 @@ def main(args, resume_preempt=False):
         cosine_sim_meter = AverageMeter()
         closest_pred_acc_meter = AverageMeter()
         closest_pred_prob_meter = AverageMeter()
+        closest_pred_prob_meter_std = AverageMeter()
+        closest_pred_prob_meter_ecg = AverageMeter()
+        closest_pred_prob_meter_ecg_std = AverageMeter()
         val_loss_meter = AverageMeter()
         val_predict_meter = AverageMeter()
         val_maskB_meter = AverageMeter()
@@ -421,7 +425,14 @@ def main(args, resume_preempt=False):
                         loss = loss_fn(z, h)
                         cosine_sim_meter.update(global_pooled_cosine_sim_score(ctx,h.view(num_pred_masks,batch_size,h.shape[-2], h.shape[-1])))
                         closest_pred_acc_meter.update(closest_prediction_accuracy(h,z))
-                        closest_pred_prob_meter.update(closest_prediction_probability(h,z))
+
+                        result = closest_prediction_probability(h,z)
+                        closest_pred_prob_meter.update(result["mean"])
+                        closest_pred_prob_meter_std.update(result["std"])
+
+                        result = closest_prediction_probability_per_ecg(h,z, num_targets=num_pred_masks,batchsize=batch_size)
+                        closest_pred_prob_meter_ecg.update(result["mean"])
+                        closest_pred_prob_meter_ecg_std.update(result["std"])
 
                     #  Step 2. Backward & step
                     if use_bfloat16:
@@ -485,9 +496,12 @@ def main(args, resume_preempt=False):
                                     "target encoding min": target_enc_meter.min,
                                     "context encoding max": ctx_enc_meter.max,
                                     "target encoding max": target_enc_meter.max,
-                                    "cosine similarity context targets": cosine_sim_meter.avg,
-                                    "closest prediction accuracy": closest_pred_acc_meter.avg,
-                                    "closest prediction probability": closest_pred_prob_meter.avg,
+                                    "Custom Stats/cosine similarity context targets": cosine_sim_meter.avg,
+                                    "Custom Stats/closest prediction accuracy": closest_pred_acc_meter.avg,
+                                    "Custom Stats/closest prediction probability": closest_pred_prob_meter.avg,
+                                    "Custom Stats/closest prediction probability std": closest_pred_prob_meter_std.avg,
+                                    "Custom Stats/closest prediction probability ecg": closest_pred_prob_meter_ecg.avg,
+                                    "Custom Stats/closest prediction probability ecg std": closest_pred_prob_meter_ecg_std.avg,
                                     "grad_stats_first": grad_stats.first_layer,
                                     "grad_stats_last": grad_stats.last_layer,
                                     "grad_stats min": grad_stats.min,
@@ -508,57 +522,58 @@ def main(args, resume_preempt=False):
             encoder.eval()
             target_encoder.eval()
             predictor.eval()
-            for itr, (udata, masks_enc, masks_pred) in enumerate(val_loader):
-                
+            with torch.no_grad():
+                for itr, (udata, masks_enc, masks_pred) in enumerate(val_loader):
+                    
 
-                def load_imgs():
-                    # -- unsupervised imgs
-                    imgs = udata[0].to(device, non_blocking=True)
-                    masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
-                    masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
-                    return (imgs, masks_1, masks_2)
-                imgs, masks_enc, masks_pred = load_imgs()
-                val_maskA_meter.update(len(masks_enc[0][0]))
-                val_maskB_meter.update(len(masks_pred[0][0]))
-                
-                
-                def val_step():
-                    def forward_target():
-                        with torch.no_grad():
-                            h = target_encoder(imgs)
-                            h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
-                            B = len(h)
-                            # -- create targets (masked regions of h)
-                            h = apply_masks(h, masks_pred)
-                            h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
-                            return h
+                    def load_imgs():
+                        # -- unsupervised imgs
+                        imgs = udata[0].to(device, non_blocking=True)
+                        masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
+                        masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
+                        return (imgs, masks_1, masks_2)
+                    imgs, masks_enc, masks_pred = load_imgs()
+                    val_maskA_meter.update(len(masks_enc[0][0]))
+                    val_maskB_meter.update(len(masks_pred[0][0]))
+                    
+                    
+                    def val_step():
+                        def forward_target():
+                            with torch.no_grad():
+                                h = target_encoder(imgs)
+                                h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                                B = len(h)
+                                # -- create targets (masked regions of h)
+                                h = apply_masks(h, masks_pred)
+                                h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                                return h
 
-                    def forward_context():
-                        with torch.no_grad():
-                            z = encoder(imgs, masks_enc)
-                            z = predictor(z, masks_enc, masks_pred)
-                            return z
+                        def forward_context():
+                            with torch.no_grad():
+                                z = encoder(imgs, masks_enc)
+                                z = predictor(z, masks_enc, masks_pred)
+                                return z
 
-                    def loss_fn(z, h):
-                        loss = F.smooth_l1_loss(z, h)
-                        loss = AllReduce.apply(loss)
-                        return loss
+                        def loss_fn(z, h):
+                            loss = F.smooth_l1_loss(z, h)
+                            loss = AllReduce.apply(loss)
+                            return loss
 
-                    # Step 1. Forward
-                    with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
-                        h = forward_target()
-                        z = forward_context()
-                        loss = loss_fn(z, h)
+                        # Step 1. Forward
+                        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                            h = forward_target()
+                            z = forward_context()
+                            loss = loss_fn(z, h)
 
 
-                    return (float(loss), grad_stats)
-                (loss, grad_stats), etime = gpu_timer(val_step)
-                val_loss_meter.update(loss)
+                        return (float(loss), grad_stats)
+                    (loss, grad_stats), etime = gpu_timer(val_step)
+                    val_loss_meter.update(loss)
 
-                assert not np.isnan(loss), 'loss is nan'
+                    assert not np.isnan(loss), 'loss is nan'
 
-            wandb.log({"val_loss":val_loss_meter.avg, "val_masksA": val_maskA_meter.avg, 
-                    "val_maskB": val_maskB_meter.avg})
+            wandb.log({"val/val_loss":val_loss_meter.avg, "val/val_masksA": val_maskA_meter.avg, 
+                    "val/val_maskB": val_maskB_meter.avg})
             logger.info('avg. val loss %.3f' % val_loss_meter.avg)
             
             encoder.train()

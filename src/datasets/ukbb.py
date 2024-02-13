@@ -36,7 +36,8 @@ def make_ukbb(
     training=True,
     copy_data=False,
     drop_last=True,
-    subset_file=None
+    subset_file=None,
+    persistent_workers=False
 ):
     
     data_path = root_path + data_file
@@ -61,7 +62,7 @@ def make_ukbb(
         drop_last=drop_last,
         pin_memory=pin_mem,
         num_workers=num_workers,
-        persistent_workers=True)
+        persistent_workers=persistent_workers)
     logger.info('Ukbb unsupervised data loader created')
 
     return dataset, data_loader, dist_sampler
